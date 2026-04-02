@@ -1,0 +1,11 @@
+{
+  "name": "bun-smoke",
+  "version": "0.1.0",
+  "description": "sbox bun smoke project",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "kleur": "^4.1.5"
+  }
+}

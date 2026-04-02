@@ -1,0 +1,68 @@
+sbox plan
+phase: 2
+config: $ROOT/examples/npm-smoke/sbox.yaml
+
+command: npm install --global /var/tmp/sbox/npm-artifacts/npm-smoke-0.1.0.tgz
+argv:
+  - npm
+  - install
+  - --global
+  - /var/tmp/sbox/npm-artifacts/npm-smoke-0.1.0.tgz
+
+audit:
+  install_style: true
+  strict_security: false
+  trusted_image_required: true
+  sensitive_pass_through: <none>
+  package_manager: npm
+  lockfile: not-applicable
+  script_hooks: policy=allow, allowed
+  audit_hooks: <none>
+
+resolution:
+  profile: install
+  profile source: dispatch rule `npm-install` via pattern `npm install --global /var/tmp/sbox/npm-artifacts/npm-smoke-0.1.0.tgz`
+  mode: sandbox
+  mode source: profile
+
+runtime:
+  backend: podman
+  image: ref:node:22-bookworm-slim@sha256:3efebb4f5f2952af4c86fe443a4e219129cc36f90e93d1ea2c4aa6cf65bdecf2
+  image_trust: pinned-digest
+  verify_signature: not requested
+  user mapping: keep-id
+
+workspace:
+  root: $ROOT
+  invocation cwd: $ROOT
+  effective host dir: $ROOT
+  mount: /workspace
+  sandbox cwd: /workspace
+  cwd mapping: mapped from invocation cwd
+
+policy:
+  network: on
+  writable: true
+  no_new_privileges: true
+  read_only_rootfs: false
+  reuse_container: false
+  reusable_session: <none>
+  cap_drop: <none>
+  cap_add: <none>
+  ports: <none>
+
+environment:
+  - npm_config_cache=/var/tmp/sbox/npm-cache (set)
+  - npm_config_prefix=/var/tmp/sbox/npm-prefix (set)
+  denied: NPM_TOKEN, NODE_AUTH_TOKEN
+
+mounts:
+  - bind $ROOT -> /workspace (rw, workspace)
+
+caches:
+  - npm-cache -> /var/tmp/sbox/npm-cache (rw, source: <default>)
+  - npm-prefix -> /var/tmp/sbox/npm-prefix (rw, source: <default>)
+  - npm-artifacts -> /var/tmp/sbox/npm-artifacts (rw, source: <default>)
+
+secrets:
+  <none>

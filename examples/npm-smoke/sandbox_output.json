@@ -1,0 +1,6 @@
+{
+  "cwd": "/workspace/examples/npm-smoke",
+  "npmConfigCache": "/var/tmp/sbox/npm-cache",
+  "npmConfigPrefix": "/var/tmp/sbox/npm-prefix",
+  "message": "hello from npm sandbox"
+}

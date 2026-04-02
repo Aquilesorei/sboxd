@@ -1,0 +1,54 @@
+version: 1
+
+runtime:
+  backend: podman
+  rootless: true
+  reuse_container: false
+
+workspace:
+  root: ../..
+  mount: /workspace
+  writable: true
+
+image:
+  ref: oven/bun:1.2.16
+
+environment:
+  set:
+    BUN_INSTALL_CACHE_DIR: /var/tmp/sbox/bun-cache
+  deny:
+    - NPM_TOKEN
+    - NODE_AUTH_TOKEN
+
+caches:
+  - name: bun-cache
+    target: /var/tmp/sbox/bun-cache
+
+profiles:
+  install:
+    mode: sandbox
+    network: on
+    writable: true
+    require_lockfile: true
+    script_policy: ignore
+    audit_hooks:
+      - bun-audit
+    ports: []
+    no_new_privileges: true
+
+  default:
+    mode: sandbox
+    network: off
+    writable: true
+    ports: []
+    no_new_privileges: true
+
+dispatch:
+  bun-install:
+    match:
+      - bun install --ignore-scripts
+    profile: install
+  bun-run:
+    match:
+      - bun run src/index.ts
+    profile: default

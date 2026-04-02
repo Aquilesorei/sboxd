@@ -1,0 +1,64 @@
+version: 1
+
+runtime:
+  backend: podman
+  rootless: true
+  reuse_container: false
+
+workspace:
+  root: .
+  mount: /workspace
+  writable: true
+
+image:
+  ref: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+  digest: sha256:847b5e690018bc6b9d97a0848da65f721b785f1e78d9c7067b8947c7010b2718
+
+environment:
+  set:
+    APP_MODE: sandbox-test
+    UV_CACHE_DIR: /var/tmp/sbox/uv-cache
+    UV_PROJECT_ENVIRONMENT: /var/tmp/sbox/uv-env
+  deny:
+    - SECRET_TOKEN
+
+caches:
+  - name: uv-cache
+    target: /var/tmp/sbox/uv-cache
+  - name: uv-env
+    target: /var/tmp/sbox/uv-env
+
+profiles:
+  default:
+    mode: sandbox
+    network: off
+    writable: true
+    ports: []
+    no_new_privileges: true
+
+  host:
+    mode: host
+    network: on
+    writable: true
+    ports: []
+
+  deps:
+    mode: sandbox
+    network: on
+    writable: true
+    require_pinned_image: true
+    ports: []
+    no_new_privileges: true
+
+dispatch:
+  uv-sync:
+    match:
+      - uv sync
+      - uv sync*
+    profile: deps
+  uv-run:
+    match:
+      - uv run --offline python-smoke
+      - uv run python -m python_smoke
+      - uv run python-smoke
+    profile: default

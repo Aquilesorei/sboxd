@@ -1,0 +1,11 @@
+{
+  "name": "npm-smoke",
+  "version": "0.1.0",
+  "description": "sbox npm smoke project",
+  "bin": {
+    "npm-smoke": "./src/index.cjs"
+  },
+  "dependencies": {
+    "kleur": "^4.1.5"
+  }
+}

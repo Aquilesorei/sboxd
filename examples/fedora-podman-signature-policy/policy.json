@@ -1,0 +1,21 @@
+{
+  "default": [
+    {
+      "type": "reject"
+    }
+  ],
+  "transports": {
+    "docker": {
+      "registry.example.com/team/secure-images": [
+        {
+          "type": "signedBy",
+          "keyType": "GPGKeys",
+          "keyPath": "/home/YOU/.config/containers/keys/team-signing.gpg",
+          "signedIdentity": {
+            "type": "matchRepoDigestOrExact"
+          }
+        }
+      ]
+    }
+  }
+}

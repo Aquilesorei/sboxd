@@ -1,0 +1,53 @@
+version: 1
+
+runtime:
+  backend: podman
+  rootless: true
+  reuse_container: false
+
+workspace:
+  root: ../..
+  mount: /workspace
+  writable: true
+
+image:
+  ref: python:3.13-slim
+
+environment:
+  set:
+    POETRY_CACHE_DIR: /var/tmp/sbox/poetry-cache
+    POETRY_VIRTUALENVS_PATH: /var/tmp/sbox/poetry-venvs
+  deny:
+    - PYPI_TOKEN
+
+caches:
+  - name: poetry-cache
+    target: /var/tmp/sbox/poetry-cache
+  - name: poetry-venvs
+    target: /var/tmp/sbox/poetry-venvs
+
+profiles:
+  install:
+    mode: sandbox
+    network: on
+    writable: true
+    require_lockfile: true
+    ports: []
+    no_new_privileges: true
+
+  default:
+    mode: sandbox
+    network: off
+    writable: true
+    ports: []
+    no_new_privileges: true
+
+dispatch:
+  poetry-install:
+    match:
+      - poetry install
+    profile: install
+  poetry-run:
+    match:
+      - poetry run python -c *
+    profile: default
