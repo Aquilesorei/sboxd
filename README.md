@@ -31,14 +31,14 @@ cargo install sbox
 **Pre-built binaries** (Linux x86_64 and aarch64) are attached to each [GitHub Release](../../releases):
 
 ```bash
-curl -fsSL https://github.com/Aquilesorei/sbox/releases/latest/download/sbox-linux-x86_64 -o ~/.local/bin/sbox
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-linux-x86_64 -o ~/.local/bin/sbox
 chmod +x ~/.local/bin/sbox
 ```
 
 **From source:**
 
 ```bash
-git clone https://github.com/Aquilesorei/sbox
+git clone https://github.com/Aquilesorei/sboxd
 cd sbox
 cargo install --path .
 ```
