@@ -1,5 +1,5 @@
 [package]
-name = "sbox"
+name = "sboxd"
 version = "0.1.0"
 edition = "2024"
 description = "Policy-driven command runner for sandboxed dependency installation"
@@ -9,6 +9,14 @@ license = "MIT"
 authors = ["Aquilesorei"]
 keywords = ["sandbox", "podman", "security", "supply-chain", "package-manager"]
 categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "sbox"
+path = "src/main.rs"
+
+[lib]
+name = "sbox"
+path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
