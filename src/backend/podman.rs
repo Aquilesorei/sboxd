@@ -335,6 +335,10 @@ pub fn build_run_args_with_options(
         ResolvedUser::KeepId => {
             args.push("--userns".to_string());
             args.push("keep-id".to_string());
+            // Disable SELinux relabeling; rootless keep-id containers cannot set
+            // xattrs on device nodes (e.g. /dev/null) when SELinux is enforcing.
+            args.push("--security-opt".to_string());
+            args.push("label=disable".to_string());
         }
         ResolvedUser::Explicit { uid, gid } => {
             args.push("--user".to_string());
@@ -403,8 +407,11 @@ fn append_mount_args(args: &mut Vec<String>, mount: &ResolvedMount) -> Result<()
                 .as_ref()
                 .expect("bind mounts always resolve source");
             args.push("--mount".to_string());
+            // relabel=private is omitted: we pass --security-opt label=disable for
+            // keep-id containers, and relabeling /dev/null (used for mask mounts) would
+            // fail with lsetxattr under SELinux + rootless Podman regardless.
             args.push(format!(
-                "type=bind,src={},target={},relabel=private,readonly={}",
+                "type=bind,src={},target={},readonly={}",
                 source.display(),
                 mount.target,
                 bool_string(mount.read_only)
@@ -424,9 +431,10 @@ fn append_mount_args(args: &mut Vec<String>, mount: &ResolvedMount) -> Result<()
         "mask" => {
             // Overlay the file with /dev/null so the container sees an empty file.
             // The host file is untouched; malicious hooks cannot read its contents.
+            // No relabel=private: would trigger lsetxattr on /dev/null under SELinux.
             args.push("--mount".to_string());
             args.push(format!(
-                "type=bind,src=/dev/null,target={},relabel=private,readonly=true",
+                "type=bind,src=/dev/null,target={},readonly=true",
                 mount.target
             ));
             Ok(())
@@ -597,6 +605,8 @@ fn append_container_settings(
         ResolvedUser::KeepId => {
             args.push("--userns".to_string());
             args.push("keep-id".to_string());
+            args.push("--security-opt".to_string());
+            args.push("label=disable".to_string());
         }
         ResolvedUser::Explicit { uid, gid } => {
             args.push("--user".to_string());

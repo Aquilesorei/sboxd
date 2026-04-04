@@ -750,6 +750,9 @@ fn resolve_environment(config: &EnvironmentConfig) -> ResolvedEnvironment {
     }
 
     for (name, value) in &config.set {
+        if denied.contains(name.as_str()) {
+            continue;
+        }
         variables.insert(
             name.clone(),
             ResolvedEnvVar {

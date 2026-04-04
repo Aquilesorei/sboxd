@@ -1,0 +1,8 @@
+{
+  "name": "sbox-adversarial-test",
+  "version": "1.0.0",
+  "description": "Adversarial test payload — simulates common postinstall attack patterns",
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  }
+}

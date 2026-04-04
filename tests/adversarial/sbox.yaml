@@ -1,0 +1,54 @@
+version: 1
+
+runtime:
+  backend: podman
+  rootless: true
+
+workspace:
+  root: .
+  mount: /workspace
+  writable: false
+  writable_paths:
+    - node_modules
+  exclude_paths:
+    - .env
+    - .env.local
+    - "*.pem"
+    - "*.key"
+    - .npmrc
+    - .netrc
+    - ".ssh/*"
+    - ".aws/*"
+    - ".docker/*"
+    - ".kube/*"
+
+image:
+  ref: node:22-bookworm-slim
+
+environment:
+  # Inject fake sensitive values — sbox should strip these before the container sees them
+  set:
+    NPM_TOKEN: "fake-npm-token-should-not-leak"
+    NODE_AUTH_TOKEN: "fake-node-auth-token-should-not-leak"
+  deny:
+    - NPM_TOKEN
+    - NODE_AUTH_TOKEN
+    - AWS_SECRET_ACCESS_KEY
+    - AWS_ACCESS_KEY_ID
+    - GITHUB_TOKEN
+    - SECRET_TOKEN
+
+profiles:
+  install:
+    mode: sandbox
+    network: off
+    writable: true
+    role: install
+    no_new_privileges: true
+    read_only_rootfs: false
+
+dispatch:
+  npm-install:
+    match:
+      - "npm install*"
+    profile: install
