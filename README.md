@@ -25,7 +25,7 @@ v1 and v2 are both complete. Current implemented scope:
 **From crates.io:**
 
 ```bash
-cargo install sbox
+cargo install sboxd
 ```
 
 **Pre-built binaries** (Linux x86_64 and aarch64) are attached to each [GitHub Release](../../releases):
