@@ -1,6 +1,6 @@
 [package]
 name = "sboxd"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Policy-driven command runner for sandboxed dependency installation"
 repository = "https://github.com/Aquilesorei/sboxd"
