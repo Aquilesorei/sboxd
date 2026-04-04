@@ -139,6 +139,7 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: Some("/bin/bash".to_string()),
+                writable_paths: None,
             },
         );
 
@@ -154,6 +155,8 @@ mod tests {
             secrets: Vec::new(),
             profiles,
             dispatch: IndexMap::new(),
+
+            package_manager: None,
         }
     }
 

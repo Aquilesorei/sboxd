@@ -37,6 +37,33 @@ pub struct Config {
 
     #[serde(default)]
     pub dispatch: IndexMap<String, DispatchRule>,
+
+    #[serde(default)]
+    pub package_manager: Option<PackageManagerConfig>,
+}
+
+/// Top-level `package_manager:` block. Generates install/build/default profiles and dispatch
+/// rules automatically. Zero additional config required — just specify the package manager name.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageManagerConfig {
+    /// One of: npm, yarn, pnpm, bun, uv, pip, poetry, cargo, go
+    pub name: String,
+
+    /// Override the preset's install writable paths.
+    #[serde(default)]
+    pub install_writable: Option<Vec<String>>,
+
+    /// Override the preset's build writable paths.
+    #[serde(default)]
+    pub build_writable: Option<Vec<String>>,
+
+    /// Override the preset's network_allow list for the install profile.
+    #[serde(default)]
+    pub network_allow: Option<Vec<String>>,
+
+    /// Commands to run on the host before the sandboxed install. If any fails, execution is refused.
+    #[serde(default)]
+    pub pre_run: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -220,6 +247,10 @@ pub struct ProfileConfig {
     pub read_only_rootfs: Option<bool>,
     pub reuse_container: Option<bool>,
     pub shell: Option<String>,
+
+    /// When set, overrides the workspace-level `writable_paths` for this profile.
+    /// Only the listed paths are mounted read-write; all others in the workspace remain read-only.
+    pub writable_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

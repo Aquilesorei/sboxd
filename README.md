@@ -57,10 +57,13 @@ cargo install --path .
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md)
-- [Progressive adoption](docs/adoption.md) — how to add sbox to an existing project without breaking your workflow
-- [Ecosystem guides](docs/ecosystems.md) — Node.js, Python, Rust, Go configs
-- [Network security](docs/network.md) — `network: off` vs `network_allow`, the download/postinstall tension
+Start with **[How it works](docs/how-it-works.md)** — it explains bind mounts, what the sandbox actually isolates, and why the network situation is complicated. Everything else makes more sense after that.
+
+- [How it works](docs/how-it-works.md) — the mental model
+- [Getting started](docs/getting-started.md) — install and first run
+- [Progressive adoption](docs/adoption.md) — add sbox to an existing project one step at a time
+- [Ecosystem guides](docs/ecosystems.md) — Node.js, Python, Rust, Go
+- [Network security](docs/network.md) — `network: off`, `network_allow`, two-phase installs
 - [Security model](docs/security.md) — what is blocked, what is not, adversarial test results
 - [Shims](docs/shims.md) — transparent interception for npm, pip, cargo, and others
 - [Recipes](docs/recipes.md) — CI pipelines, private registries, reusable sessions
@@ -70,16 +73,22 @@ cargo install --path .
 
 ## Quick Start
 
-Initialize a project config interactively (arrow-key menus, no manual editing):
+Generate a config from a preset (recommended):
+
+```bash
+sbox init --preset node      # npm  — node:22-bookworm-slim
+sbox init --preset python    # uv   — python:3.13-slim
+sbox init --preset rust      # cargo — rust:1-bookworm
+sbox init --preset go        # go   — golang:1.23-bookworm
+sbox init --preset generic   # blank — ubuntu:24.04
+```
+
+Or use the interactive wizard (arrow-key menus):
 
 ```bash
 sbox init --interactive
-```
-
-Or generate from a preset directly:
-
-```bash
-sbox init --preset node    # node / python / rust / go / generic
+# → "simple" path: picks PM + image, writes package_manager: config
+# → "advanced" path: full manual profiles and dispatch rules
 ```
 
 Inspect the resolved policy before running anything:
@@ -308,39 +317,51 @@ When `runtime.backend` is omitted, sbox probes PATH at execution time: Podman is
 
 ## `sbox.yaml` reference
 
-A minimal config:
+The shortest working config uses `package_manager:` to generate all profiles automatically:
 
 ```yaml
 version: 1
 
-runtime:
-  backend: podman
-  rootless: true
-
 workspace:
   mount: /workspace
   writable: false
+  exclude_paths:
+    - .env
+    - .npmrc
+    - ".ssh/*"
+    - ".aws/*"
 
 image:
   ref: node:22-bookworm-slim
-  digest: sha256:...
 
+package_manager:
+  name: npm
+```
+
+sbox infers the rest: install profile (network on, registry only, lockfile writable), build profile (network off, dist writable), and a locked-down default for everything else. No profiles or dispatch rules to write.
+
+For full control, use explicit profiles:
+
+```yaml
 profiles:
-  default:
-    mode: sandbox
-    network: off
-
   install:
     mode: sandbox
     network: on
-    role: install
-    require_pinned_image: true
-    lockfile_files:
-      - package-lock.json
-    pre_run:
-      - npm audit --audit-level=high
     network_allow:
       - registry.npmjs.org
+    writable: false
+    writable_paths:
+      - node_modules
+      - package-lock.json
+    role: install
+    lockfile_files:
+      - package-lock.json
+
+  default:
+    mode: sandbox
+    network: off
+    writable: false
+    writable_paths: []
 
 dispatch:
   npm-install:
@@ -365,6 +386,7 @@ Top-level keys:
 | `secrets` | Host files mounted read-only into the container |
 | `profiles` | Execution policies indexed by name |
 | `dispatch` | Command pattern → profile routing rules |
+| `package_manager` | Zero-config shortcut — generates profiles and dispatch automatically from a preset |
 
 ## Examples
 

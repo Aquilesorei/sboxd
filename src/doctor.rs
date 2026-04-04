@@ -747,6 +747,8 @@ mod tests {
             secrets: Vec::new(),
             profiles: Default::default(),
             dispatch: Default::default(),
+
+            package_manager: None,
         };
 
         let warnings = risky_config_warnings(&config);
@@ -777,6 +779,8 @@ mod tests {
             secrets: Vec::new(),
             profiles: Default::default(),
             dispatch: Default::default(),
+
+            package_manager: None,
         };
 
         let warnings = risky_config_warnings(&config);
@@ -809,6 +813,8 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
         let config = Config {
@@ -827,6 +833,8 @@ mod tests {
             secrets: Vec::new(),
             profiles,
             dispatch: Default::default(),
+
+            package_manager: None,
         };
 
         let warnings = risky_config_warnings(&config);
@@ -867,6 +875,8 @@ mod tests {
                 secrets: Vec::new(),
                 profiles: Default::default(),
                 dispatch: Default::default(),
+
+                package_manager: None,
             },
         };
 
@@ -937,6 +947,8 @@ mod tests {
                 secrets: Vec::new(),
                 profiles: Default::default(),
                 dispatch: Default::default(),
+
+                package_manager: None,
             },
         }
     }

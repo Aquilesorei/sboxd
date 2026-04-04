@@ -30,6 +30,8 @@ fn base_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
+
+            writable_paths: None,
         },
     );
 
@@ -71,6 +73,8 @@ fn base_config() -> Config {
         secrets: Vec::new(),
         profiles,
         dispatch: IndexMap::new(),
+
+        package_manager: None,
     }
 }
 
@@ -370,6 +374,8 @@ fn accepts_valid_secret() {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
+
+            writable_paths: None,
         },
     );
     config.secrets.push(sbox::config::model::SecretConfig {

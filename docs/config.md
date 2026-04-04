@@ -2,35 +2,30 @@
 
 ## Minimal example
 
+The shortest working config uses `package_manager:` to generate everything automatically:
+
 ```yaml
 version: 1
 
-runtime:
-  backend: podman
-  rootless: true
-
 workspace:
-  root: .
   mount: /workspace
   writable: false
-  writable_paths:
-    - node_modules
+  exclude_paths:
+    - .env
+    - .npmrc
+    - ".ssh/*"
+    - ".aws/*"
 
 image:
   ref: node:22-bookworm-slim
 
-profiles:
-  default:
-    mode: sandbox
-    network: off
-
-dispatch:
-  npm-install:
-    match:
-      - "npm install*"
-      - "npm ci"
-    profile: default
+package_manager:
+  name: npm
 ```
+
+That's it. sbox infers the install profile (network on, registry-only allow-list, lockfile writable), the build profile (network off, dist writable), and a locked-down default for everything else.
+
+For full control, use explicit `profiles:` and `dispatch:` instead — described below.
 
 ---
 
@@ -130,6 +125,64 @@ environment:
 
 ---
 
+## `package_manager`
+
+The zero-config shortcut. Declare your package manager name and sbox generates all profiles and dispatch rules automatically.
+
+```yaml
+package_manager:
+  name: npm          # npm | yarn | pnpm | bun | uv | pip | poetry | cargo | go
+```
+
+What gets generated for `name: npm`:
+
+| Generated profile | Network | Writable paths | Role |
+|-------------------|---------|---------------|------|
+| `pm-npm-install` | on + `registry.npmjs.org` only | `node_modules`, `package-lock.json` | install |
+| `pm-npm-build` | off | `dist`, `node_modules/.vite-temp`, `node_modules/.tmp` | build |
+| `default` | off | nothing | run |
+
+Dispatch rules are prepended before any user-defined rules, so user dispatch always wins.
+
+**Override fields:**
+
+```yaml
+package_manager:
+  name: npm
+  install_writable:        # replace preset install writable paths
+    - node_modules
+    - package-lock.json
+    - .cache
+  build_writable:          # replace preset build writable paths
+    - dist
+    - .nuxt
+  network_allow:           # replace preset registry domains
+    - registry.npmjs.org
+    - my-private-registry.example.com
+  pre_run:                 # host commands run before install (audit, lint, etc.)
+    - npm audit --audit-level=high
+```
+
+All override fields are optional. Omit them to use the preset defaults.
+
+**Supported presets:**
+
+| name | install writable | build writable | registry domains |
+|------|-----------------|----------------|-----------------|
+| `npm` | `node_modules`, `package-lock.json` | `dist` | `registry.npmjs.org` |
+| `yarn` | `node_modules`, `yarn.lock` | `dist` | `registry.yarnpkg.com` |
+| `pnpm` | `node_modules`, `pnpm-lock.yaml` | `dist` | `registry.npmjs.org` |
+| `bun` | `node_modules`, `bun.lockb` | `dist` | `registry.npmjs.org` |
+| `uv` | `.venv` | `dist` | `pypi.org` |
+| `pip` | `.venv` | — | `pypi.org` |
+| `poetry` | `.venv` | `dist` | `pypi.org` |
+| `cargo` | `target` | `target/release` | `crates.io` |
+| `go` | `vendor` | — | `proxy.golang.org` |
+
+`package_manager:` and `profiles:`/`dispatch:` can coexist. Explicit profiles take precedence.
+
+---
+
 ## `profiles`
 
 Each profile defines an execution policy. The `default` profile is used when no dispatch rule matches.
@@ -156,6 +209,9 @@ profiles:
       - NET_RAW
     ports: []                 # published ports (only with network: on)
     reuse_container: false    # override runtime.reuse_container for this profile
+    writable_paths:           # override workspace.writable_paths for this profile only
+      - node_modules
+      - package-lock.json
 ```
 
 | Field | Default | Description |
@@ -172,6 +228,7 @@ profiles:
 | `pre_run` | `[]` | Shell commands run on the **host** before the sandbox. If any fails, execution is aborted. |
 | `cap_drop` | `[]` | Linux capabilities to drop from the container. |
 | `ports` | `[]` | Port mappings in `host:container` format. Only with `network: on`. |
+| `writable_paths` | inherited | When set, overrides `workspace.writable_paths` for this profile only. Use this to give different profiles different write access (e.g. install writes lockfile, build writes dist). |
 
 ---
 

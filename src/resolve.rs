@@ -223,6 +223,7 @@ pub fn resolve_execution_plan(
     let environment = resolve_environment(&environment);
     let mounts = resolve_mounts(
         config,
+        profile,
         &resolved_workspace.root,
         &resolved_workspace.mount,
         policy.writable,
@@ -916,6 +917,7 @@ pub(crate) fn glob_match(s: &str, pattern: &str) -> bool {
 
 fn resolve_mounts(
     config: &Config,
+    profile: &ProfileConfig,
     workspace_root: &Path,
     workspace_mount: &str,
     profile_writable: bool,
@@ -937,13 +939,19 @@ fn resolve_mounts(
     }];
 
     // When the workspace is read-only, inject rw bind mounts for each writable_path.
+    // Profile-level writable_paths override workspace-level when set.
     // These are mounted after the workspace so Podman's mount ordering gives them precedence.
     if !workspace_writable {
-        let writable_paths = config
-            .workspace
-            .as_ref()
-            .map(|ws| ws.writable_paths.as_slice())
-            .unwrap_or(&[]);
+        let writable_paths: &[String] = profile
+            .writable_paths
+            .as_deref()
+            .unwrap_or_else(|| {
+                config
+                    .workspace
+                    .as_ref()
+                    .map(|ws| ws.writable_paths.as_slice())
+                    .unwrap_or(&[])
+            });
         for rel_path in writable_paths {
             mounts.push(ResolvedMount {
                 kind: "bind".to_string(),
@@ -1251,6 +1259,8 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
         profiles.insert(
@@ -1272,6 +1282,8 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
 
@@ -1318,6 +1330,8 @@ mod tests {
             secrets: Vec::new(),
             profiles,
             dispatch,
+
+            package_manager: None,
         }
     }
 
@@ -1598,6 +1612,8 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
         config.dispatch.insert(

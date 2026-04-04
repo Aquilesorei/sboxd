@@ -723,6 +723,18 @@ fn validate_mount_source(mount: &ResolvedMount) -> Result<(), SboxError> {
     }
 
     if mount.create {
+        // If the path looks like a file (has an extension), create an empty file.
+        // Otherwise create a directory (e.g. node_modules, .cache).
+        if source.extension().is_some() {
+            if let Some(parent) = source.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            return fs::write(source, b"").map_err(|_| SboxError::HostPathNotFound {
+                kind: "mount source",
+                name: mount.target.clone(),
+                path: source.clone(),
+            });
+        }
         return fs::create_dir_all(source).map_err(|_| SboxError::HostPathNotFound {
             kind: "mount source",
             name: mount.target.clone(),

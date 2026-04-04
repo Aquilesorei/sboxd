@@ -1,26 +1,19 @@
 # Ecosystem Guides
 
-Worked examples for common language ecosystems. Each shows a production-ready `sbox.yaml` with caching, credential masking, and install policy.
+Worked examples for common language ecosystems.
 
 ---
 
 ## Node.js (npm / pnpm / yarn / bun)
 
-### Recommended config
+### Zero-config setup
 
 ```yaml
 version: 1
 
-runtime:
-  backend: podman
-  rootless: true
-
 workspace:
-  root: .
   mount: /workspace
   writable: false
-  writable_paths:
-    - node_modules
   exclude_paths:
     - .env
     - .env.local
@@ -31,29 +24,59 @@ workspace:
 
 image:
   ref: node:22-bookworm-slim
-  digest: sha256:<pin this>
 
 environment:
   pass_through:
     - TERM
-    - CI
+
+package_manager:
+  name: npm   # or: yarn | pnpm | bun
+```
+
+That's the entire config. sbox automatically:
+- Routes `npm install` → network on, only `registry.npmjs.org` reachable, `node_modules` and `package-lock.json` writable
+- Routes `npm run build` → network off, only `dist` writable, postinstall code can't touch source
+- Routes everything else → network off, workspace fully read-only
+
+### With a persistent cache (faster re-installs)
+
+```yaml
+package_manager:
+  name: npm
+
+environment:
   set:
     npm_config_cache: /var/tmp/sbox/npm-cache
-  deny:
-    - NPM_TOKEN
-    - NODE_AUTH_TOKEN
 
 caches:
   - name: npm-cache
     target: /var/tmp/sbox/npm-cache
+```
 
+### With a pre-install audit
+
+```yaml
+package_manager:
+  name: npm
+  pre_run:
+    - npm audit --audit-level=high
+```
+
+### Advanced: full manual config
+
+If you need more control than `package_manager:` provides, use explicit profiles:
+
+```yaml
 profiles:
   install:
     mode: sandbox
     network: on
     network_allow:
       - "*.npmjs.org"
-    writable: true
+    writable: false
+    writable_paths:
+      - node_modules
+      - package-lock.json
     role: install
     no_new_privileges: true
     lockfile_files:
@@ -62,10 +85,21 @@ profiles:
     pre_run:
       - npm audit --audit-level=high
 
+  build:
+    mode: sandbox
+    network: off
+    writable: false
+    writable_paths:
+      - dist
+      - node_modules/.vite-temp
+      - node_modules/.tmp
+    no_new_privileges: true
+
   default:
     mode: sandbox
     network: off
-    writable: true
+    writable: false
+    writable_paths: []
     no_new_privileges: true
 
 dispatch:
@@ -74,283 +108,89 @@ dispatch:
       - "npm install*"
       - "npm ci"
     profile: install
-  npm-run:
+  npm-build:
     match:
-      - "npm run*"
-      - "npx *"
-    profile: default
+      - "npm run build*"
+    profile: build
 ```
 
-### Key decisions
+### pnpm / yarn / bun
 
-- `network_allow: ["*.npmjs.org"]` — allows download from the npm registry; blocks exfiltration to arbitrary hosts
-- `npm_config_cache` — redirects the npm cache into a persistent volume so the package cache survives between runs
-- `NPM_TOKEN` is in `deny` — even if set in the host environment, it never reaches the container
-- `pre_run: npm audit` — runs an audit on the host before allowing the sandboxed install
-- `lockfile_files` — in strict mode, refuses install if `package-lock.json` doesn't exist yet
-
-### pnpm
-
-Add to `environment.set`:
+Same zero-config approach — just change the name:
 
 ```yaml
-set:
-  PNPM_HOME: /var/tmp/sbox/pnpm-store
+package_manager:
+  name: pnpm   # or yarn, bun
 ```
 
-Add a cache:
+For a persistent cache:
 
-```yaml
-caches:
-  - name: pnpm-store
-    target: /var/tmp/sbox/pnpm-store
-```
-
-Update dispatch:
-
-```yaml
-dispatch:
-  pnpm-install:
-    match:
-      - "pnpm install*"
-      - "pnpm add*"
-    profile: install
-```
-
-### yarn (classic)
-
-```yaml
-environment:
-  set:
-    YARN_CACHE_FOLDER: /var/tmp/sbox/yarn-cache
-
-caches:
-  - name: yarn-cache
-    target: /var/tmp/sbox/yarn-cache
-```
-
-### bun
-
-```yaml
-environment:
-  set:
-    BUN_INSTALL_CACHE_DIR: /var/tmp/sbox/bun-cache
-
-caches:
-  - name: bun-cache
-    target: /var/tmp/sbox/bun-cache
-
-profiles:
-  install:
-    mode: sandbox
-    network: on
-    network_allow:
-      - "*.npmjs.org"
-      - registry.npmjs.org
-    role: install
-    lockfile_files:
-      - bun.lockb
-      - bun.lock
-```
+| Manager | env var | cache path |
+|---------|---------|-----------|
+| pnpm | `PNPM_HOME` | `/var/tmp/sbox/pnpm-store` |
+| yarn | `YARN_CACHE_FOLDER` | `/var/tmp/sbox/yarn-cache` |
+| bun | `BUN_INSTALL_CACHE_DIR` | `/var/tmp/sbox/bun-cache` |
 
 ---
 
 ## Python (uv / pip / poetry)
 
-### uv (recommended)
+### Zero-config setup
 
 ```yaml
-version: 1
-
-runtime:
-  backend: podman
-  rootless: true
-
-workspace:
-  root: .
-  mount: /workspace
-  writable: false
-  writable_paths:
-    - .venv
-  exclude_paths:
-    - .env
-    - .env.local
-    - ".ssh/*"
-    - ".aws/*"
-
 image:
   ref: python:3.13-slim
-  digest: sha256:<pin this>
+
+package_manager:
+  name: uv   # or: pip | poetry
+```
+
+Routes `uv sync` / `uv add` → network on, `pypi.org` only, `.venv` writable. Everything else → network off.
+
+### With cache
+
+```yaml
+package_manager:
+  name: uv
 
 environment:
-  pass_through:
-    - TERM
-    - CI
   set:
     UV_CACHE_DIR: /var/tmp/sbox/uv-cache
 
 caches:
   - name: uv-cache
     target: /var/tmp/sbox/uv-cache
-
-profiles:
-  install:
-    mode: sandbox
-    network: on
-    network_allow:
-      - "*.pypi.org"
-      - files.pythonhosted.org
-    writable: true
-    role: install
-    no_new_privileges: true
-    lockfile_files:
-      - uv.lock
-
-  default:
-    mode: sandbox
-    network: off
-    writable: true
-    no_new_privileges: true
-
-dispatch:
-  uv-sync:
-    match:
-      - "uv sync*"
-      - "uv add*"
-    profile: install
-  uv-run:
-    match:
-      - "uv run*"
-    profile: default
 ```
 
-### poetry
-
-```yaml
-environment:
-  set:
-    POETRY_CACHE_DIR: /var/tmp/sbox/poetry-cache
-    POETRY_VIRTUALENVS_IN_PROJECT: "true"
-
-caches:
-  - name: poetry-cache
-    target: /var/tmp/sbox/poetry-cache
-
-profiles:
-  install:
-    mode: sandbox
-    network: on
-    network_allow:
-      - "*.pypi.org"
-      - files.pythonhosted.org
-    role: install
-    lockfile_files:
-      - poetry.lock
-
-dispatch:
-  poetry-install:
-    match:
-      - "poetry install*"
-      - "poetry add*"
-    profile: install
-```
-
-### pip
-
-```yaml
-environment:
-  set:
-    PIP_CACHE_DIR: /var/tmp/sbox/pip-cache
-
-caches:
-  - name: pip-cache
-    target: /var/tmp/sbox/pip-cache
-
-profiles:
-  install:
-    mode: sandbox
-    network: on
-    network_allow:
-      - "*.pypi.org"
-      - files.pythonhosted.org
-    role: install
-
-dispatch:
-  pip-install:
-    match:
-      - "pip install*"
-      - "pip3 install*"
-    profile: install
-```
+For poetry, use `POETRY_CACHE_DIR` and `POETRY_VIRTUALENVS_IN_PROJECT: "true"`. For pip, use `PIP_CACHE_DIR`.
 
 ---
 
 ## Rust (cargo)
 
 ```yaml
-version: 1
-
-runtime:
-  backend: podman
-  rootless: true
-
-workspace:
-  root: .
-  mount: /workspace
-  writable: false
-  writable_paths:
-    - target
-  exclude_paths:
-    - ".ssh/*"
-    - ".aws/*"
-
 image:
   ref: rust:1-bookworm
-  digest: sha256:<pin this>
+
+package_manager:
+  name: cargo
+```
+
+Routes `cargo build` / `cargo fetch` → network on, `crates.io` only, `target` writable. Release builds → network off.
+
+With a persistent registry cache:
+
+```yaml
+package_manager:
+  name: cargo
 
 environment:
-  pass_through:
-    - TERM
-    - CI
   set:
     CARGO_HOME: /var/tmp/sbox/cargo-home
-    CARGO_TARGET_DIR: /workspace/target
 
 caches:
   - name: cargo-registry
     target: /var/tmp/sbox/cargo-home
-
-profiles:
-  build:
-    mode: sandbox
-    network: on
-    network_allow:
-      - "*.crates.io"
-      - static.crates.io
-      - "*.github.com"
-    writable: true
-    role: install
-    no_new_privileges: true
-    lockfile_files:
-      - Cargo.lock
-
-  test:
-    mode: sandbox
-    network: off
-    writable: true
-    no_new_privileges: true
-
-dispatch:
-  cargo-build:
-    match:
-      - "cargo build*"
-      - "cargo check*"
-      - "cargo fetch*"
-    profile: build
-  cargo-test:
-    match:
-      - "cargo test*"
-    profile: test
 ```
 
 ---
@@ -358,70 +198,29 @@ dispatch:
 ## Go
 
 ```yaml
-version: 1
-
-runtime:
-  backend: podman
-  rootless: true
-
-workspace:
-  root: .
-  mount: /workspace
-  writable: false
-  writable_paths:
-    - vendor
-  exclude_paths:
-    - ".ssh/*"
-    - ".aws/*"
-
 image:
   ref: golang:1.23-bookworm
-  digest: sha256:<pin this>
+
+package_manager:
+  name: go
+```
+
+Routes `go get` / `go mod download` → network on, `proxy.golang.org` only, `vendor` writable. Builds → network off.
+
+With a module cache:
+
+```yaml
+package_manager:
+  name: go
 
 environment:
-  pass_through:
-    - TERM
-    - CI
   set:
     GOPATH: /var/tmp/sbox/go
     GOPROXY: https://proxy.golang.org,direct
-    GONOSUMCHECK: ""
 
 caches:
   - name: go-mod-cache
     target: /var/tmp/sbox/go
-
-profiles:
-  download:
-    mode: sandbox
-    network: on
-    network_allow:
-      - proxy.golang.org
-      - sum.golang.org
-      - "*.pkg.go.dev"
-    writable: true
-    role: install
-    no_new_privileges: true
-    lockfile_files:
-      - go.sum
-
-  build:
-    mode: sandbox
-    network: off
-    writable: true
-    no_new_privileges: true
-
-dispatch:
-  go-mod-download:
-    match:
-      - "go mod download*"
-      - "go get*"
-    profile: download
-  go-build:
-    match:
-      - "go build*"
-      - "go test*"
-    profile: build
 ```
 
 ---

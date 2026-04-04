@@ -1,6 +1,16 @@
 # Getting Started
 
-## Installation
+## What you need
+
+- Linux (Fedora, Ubuntu, Debian, Arch, etc.)
+- Rootless Podman **or** Docker installed and working
+- That's it
+
+If you're not sure whether rootless Podman is set up correctly, run `sbox doctor` after installing — it checks everything and tells you what to fix.
+
+---
+
+## Install sbox
 
 **From crates.io:**
 
@@ -8,12 +18,24 @@
 cargo install sboxd
 ```
 
-**Pre-built binaries** (Linux x86_64 and aarch64):
+The binary is named `sbox`.
+
+**Pre-built binaries** (no Rust toolchain needed):
 
 ```bash
+# x86_64
 curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-linux-x86_64 \
-  -o ~/.local/bin/sbox
-chmod +x ~/.local/bin/sbox
+  -o ~/.local/bin/sbox && chmod +x ~/.local/bin/sbox
+
+# aarch64
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-linux-aarch64 \
+  -o ~/.local/bin/sbox && chmod +x ~/.local/bin/sbox
+```
+
+Make sure `~/.local/bin` is in your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
 ```
 
 **From source:**
@@ -24,89 +46,129 @@ cd sboxd
 cargo install --path .
 ```
 
-## Requirements
+---
 
-- Linux (rootless Podman or Docker)
-- Podman 4+ or Docker 24+ installed and working
-
-Check everything is ready:
+## Check everything works
 
 ```bash
 sbox doctor
 ```
 
-## Create a config
+This tells you whether Podman or Docker is available, whether rootless mode is configured, whether `skopeo` is available for signature verification, and whether shims are installed. Fix anything it flags before continuing.
 
-The fastest way — interactive wizard with arrow-key menus:
+---
+
+## Add sbox to a project
+
+### Option 1 — preset (fastest)
+
+```bash
+sbox init --preset node      # Node.js — npm, node:22-bookworm-slim
+sbox init --preset python    # Python  — uv,  python:3.13-slim
+sbox init --preset rust      # Rust    — cargo, rust:1-bookworm
+sbox init --preset go        # Go      — go, golang:1.23-bookworm
+sbox init --preset generic   # Blank   — ubuntu:24.04, manual profiles
+```
+
+Language presets generate a `package_manager:` config — one line declares the package manager name and sbox handles the rest. The `generic` preset generates a manual profiles skeleton instead.
+
+### Option 2 — interactive wizard
 
 ```bash
 cd myproject
 sbox init --interactive
 ```
 
-Or pick a preset directly:
+The wizard asks two to five questions depending on your choice:
 
-```bash
-sbox init --preset node     # Node.js
-sbox init --preset python   # Python
-sbox init --preset rust     # Rust
-sbox init --preset go       # Go
-sbox init --preset generic  # Blank template
-```
+**Simple mode** (recommended for most projects):
 
-## Preview the resolved policy
+1. Setup mode → `simple`
+2. Package manager → npm / yarn / pnpm / bun / uv / pip / poetry / cargo / go
+3. Container image → default shown, press Enter to accept
+4. Container backend → auto / podman / docker
 
-Before running anything, inspect what sbox will actually do:
+Writes a minimal config with `package_manager:`. That's it — sbox infers install profiles, build profiles, network policy, and writable paths from the preset.
+
+**Advanced mode** (for custom policies):
+
+1. Setup mode → `advanced`
+2. Container backend
+3. Language / ecosystem
+4. Container image
+5. Default network access
+6. Writable paths
+7. Whether to add dispatch rules
+
+Writes a config with explicit `profiles:` and `dispatch:` for full manual control.
+
+Press Enter at any prompt to accept the default.
+
+---
+
+## See what will happen before running anything
 
 ```bash
 sbox plan -- npm install
 ```
 
-This shows the full resolved `ExecutionPlan`: which image, which mounts, network mode, environment filtering, and which profile was selected — without executing anything.
+This resolves the full execution policy and prints it — which image, which mounts, which env vars pass through, what network policy — without starting a container. Use this to understand and debug your config.
 
-## Run a command
+```
+sbox plan
+phase: 2
+config: /home/user/myproject/sbox.yaml
+
+command: npm install
+
+resolution:
+  profile: pm-npm-install
+  profile source: package_manager preset `npm` (install) via pattern `npm install*`
+  mode: sandbox
+
+runtime:
+  backend: podman
+  image: ref:node:22-bookworm-slim
+  user mapping: keep-id
+
+workspace:
+  root: /home/user/myproject
+  mount: /workspace
+  sandbox cwd: /workspace
+
+policy:
+  network: on
+  network_allow: [resolved] registry.npmjs.org
+  writable: false
+  no_new_privileges: true
+
+mounts:
+  - bind /home/user/myproject -> /workspace (ro, workspace)
+  - bind /home/user/myproject/node_modules -> /workspace/node_modules (rw, workspace)
+  - bind /home/user/myproject/package-lock.json -> /workspace/package-lock.json (rw, workspace)
+  - mask /workspace/.npmrc (credential masked)
+```
+
+---
+
+## Run your first sandboxed command
 
 ```bash
 sbox run -- npm install
-sbox run -- uv sync
-sbox run -- cargo build
 ```
 
-sbox reads `sbox.yaml` from the current directory (or walks up to find one), resolves the policy, and runs the command in a container.
+The first run pulls the container image if it's not already local (a few seconds to a few minutes depending on image size). Subsequent runs use the cached image.
 
-## Run against a specific profile
+npm runs inside the container. Postinstall scripts can only reach `registry.npmjs.org` — arbitrary internet hosts are blocked. They cannot read your SSH keys or tokens, cannot write outside `node_modules/` and `package-lock.json`. When the container exits, `node_modules/` is on your host as usual.
 
-```bash
-sbox exec install -- npm install
-sbox exec build -- cargo build --release
-```
+---
 
-## Open a shell in the sandbox
+## What's next
 
-```bash
-sbox shell
-```
+**If it worked:** read [Progressive adoption](adoption.md) to understand the residual risk from Stage 1 and how to close it.
 
-## Transparent interception with shims
+**If something broke:** check [Troubleshooting](troubleshooting.md). The most common issues are read-only filesystem errors (fix with `writable_paths`) and missing env vars (fix with `pass_through`).
 
-`sbox shim` writes thin wrapper scripts for common package managers. When called from a project with `sbox.yaml`, they delegate to `sbox run` automatically.
+**If you want to understand what the sandbox actually does:** read [How it works](how-it-works.md).
 
-```bash
-sbox shim                  # installs to ~/.local/bin
-sbox shim --dir ~/bin      # custom directory
-sbox shim --dry-run        # preview without writing
-```
-
-Add to your shell profile:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-After this, `npm install`, `uv sync`, `bun install`, etc. are automatically sandboxed in any project that has `sbox.yaml`.
-
-## Next steps
-
-- [Network security](network.md) — understanding `network: off` vs `network_allow`
-- [Security model](security.md) — what sbox protects and what it does not
-- [Config reference](config.md) — full `sbox.yaml` documentation
+**If you need to download packages from the registry:** `network: off` blocks downloads too. Read [Network security](network.md) for the options.

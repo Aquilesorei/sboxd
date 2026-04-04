@@ -1,23 +1,27 @@
 # Network Security
 
-> **The key risk:** enabling network access for package downloads also enables postinstall scripts to exfiltrate data. `network: off` is the only complete block. `network_allow` with a registry allowlist is the practical middle ground. See [Option 2](#option-2--network_allow-with-an-explicit-allowlist) and [Option 3](#option-3--two-phase-install-strongest-isolation) for how to mitigate this.
+> **The key risk:** enabling network for package downloads also enables postinstall scripts to reach the internet. There is no perfect solution. The options below explain the trade-offs clearly so you can make an informed choice.
 
-## The core tension
+---
 
-Package installation needs the network. Postinstall scripts should not have the network. These two requirements conflict.
+## Why this is hard
 
-`npm install` (and equivalents in other ecosystems) does two things in sequence:
+`npm install` does two things inside the same process:
 
-1. **Download** — fetches package tarballs from the registry. Requires network.
-2. **Postinstall** — runs arbitrary scripts from the downloaded packages. Should not have network.
+1. **Download** — fetches tarballs from the registry. Needs the internet.
+2. **Postinstall** — runs arbitrary scripts from the downloaded packages. Should not have the internet.
 
-If you sandbox the whole install with `network: off`, you cannot download anything. If you use `network: on`, postinstall scripts can exfiltrate secrets.
+If you run the whole install with `network: off`, npm cannot download anything. If you use `network: on`, postinstall scripts can send your environment variables to an attacker's server. Both options happen inside the same container.
 
-**There is no perfect solution.** The options below are ranked by strength of isolation.
+The Axios supply chain attack (March 2026) is exactly this scenario: a malicious postinstall hook used the network to exfiltrate credentials from the developer's environment. A sandboxed install with `network: off` would have made that exfiltration impossible — but only if the packages were already available locally.
 
-## Option 1 — `network: off` with local packages or pre-fetched caches
+---
 
-Works when packages are already available locally: a vendored tarball, a pre-fetched cache, or a private registry on localhost.
+## Option 1 — `network: off` with local packages
+
+**Strongest isolation. No exfiltration possible.**
+
+The container has no network stack at all. DNS fails. TCP/UDP connections fail immediately with `ENETUNREACH`. There is no loopback interface.
 
 ```yaml
 profiles:
@@ -26,11 +30,19 @@ profiles:
     network: off
 ```
 
-The adversarial test suite uses this approach — the evil package is a local `.tgz` passed directly to npm. In CI pipelines that pre-populate a cache volume, `network: off` is the safest option.
+This works when packages are already local: a vendored `node_modules/`, a pre-fetched cache volume, a `.tgz` tarball, or a private registry running on localhost.
 
-## Option 2 — `network_allow` with an explicit allowlist
+In CI pipelines that pre-populate a cache layer before the sandboxed install step, this is the recommended approach. First warm the cache (on the host or in a separate step with network on), then run the install with `network: off` against the cache.
 
-Allows download from a specific registry while blocking all other outbound connections. Postinstall scripts cannot reach attacker infrastructure.
+**When to use:** CI with a warm cache, vendored dependencies, local development after the first install.
+
+---
+
+## Option 2 — `network_allow` with a registry allowlist
+
+**Practical for most teams. Blocks common exfiltration patterns.**
+
+Allow only specific registries. Postinstall scripts cannot reach arbitrary hosts.
 
 ```yaml
 profiles:
@@ -38,46 +50,26 @@ profiles:
     mode: sandbox
     network: on
     network_allow:
-      - registry.npmjs.org
       - "*.npmjs.org"
 ```
 
-**How enforcement works:**
+**How it works under the hood:**
 
-- The container's DNS is pointed at a non-routable address (`192.0.2.1`), so arbitrary hostname lookups time out.
-- Allowed hostnames are DNS-resolved on the host and injected into the container's `/etc/hosts` via `--add-host`.
-- The container can reach those IPs directly; everything else is unreachable.
+sbox points the container's DNS resolver at a non-routable address (`192.0.2.1`). Any hostname lookup that is not on the allowlist times out — the container never gets an IP for it.
 
-**Limitation:** raw IP connections bypass DNS filtering. A postinstall script that hardcodes an IP address can still connect if the network stack allows it. Package managers always use domain names, so in practice this catches the common exfiltration patterns.
+For hostnames on the allowlist, sbox resolves them on the host at plan time and injects the IPs directly into the container's `/etc/hosts` via `--add-host`. The container can reach `registry.npmjs.org` because its IP is already there, bypassing DNS entirely. `evil.attacker.com` never gets resolved.
 
-### Glob and regex patterns
-
-```yaml
-network_allow:
-  - registry.npmjs.org          # exact hostname
-  - "*.npmjs.org"               # glob: expands to known subdomains
-  - ".*\\.pypi\\.org"           # regex: same expansion logic
-```
-
-For known base domains, sbox expands the pattern to the full set of subdomains before resolving:
-
-| Base domain | Expanded hosts |
-|-------------|----------------|
-| `npmjs.org` | `registry.npmjs.org`, `npmjs.org`, `www.npmjs.org` |
-| `pypi.org` | `pypi.org`, `files.pythonhosted.org` |
-| `crates.io` | `crates.io`, `static.crates.io` |
-| `yarnpkg.com` | `registry.yarnpkg.com`, `yarnpkg.com` |
-| `github.com` | `github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com` |
-
-For unknown domains, only the base itself is resolved.
-
-`sbox plan` shows what was resolved:
+You can see what was resolved by running `sbox plan`:
 
 ```
-network_allow: [resolved] registry.npmjs.org=x.x.x.x, npmjs.org=x.x.x.x; [patterns] *.npmjs.org
+network_allow: [resolved] registry.npmjs.org=104.x.x.x, npmjs.org=104.x.x.x; [patterns] *.npmjs.org
 ```
 
-### Registry allowlists by ecosystem
+**The gap:** a postinstall script that hardcodes an IP address bypasses DNS entirely. If an attacker controls a script and knows a reachable IP — including a cloud metadata endpoint like `169.254.169.254` — `network_allow` does not stop it. For that level of protection, you need `network: off` or a kernel-level firewall.
+
+**When to use:** most teams doing live installs from a public registry. Covers the vast majority of real postinstall exfiltration attempts, which use domain names, not hardcoded IPs.
+
+### Allowlists by ecosystem
 
 **npm / pnpm / yarn:**
 ```yaml
@@ -105,26 +97,39 @@ network_allow:
 network_allow:
   - proxy.golang.org
   - sum.golang.org
-  - "*.pkg.go.dev"
 ```
 
-## Option 3 — Two-phase install (strongest isolation)
+### Pattern expansion
 
-Run the download and the script execution as separate steps with different network policies.
+For well-known package registry domains, sbox expands wildcard patterns to the full set of known subdomains before resolving. `*.npmjs.org` resolves `registry.npmjs.org`, `npmjs.org`, and `www.npmjs.org` — not just the bare `npmjs.org`. This prevents the case where a CDN serves the registry content from a subdomain that a naive single-host allowlist would miss.
 
-**Phase 1 — download without scripts** (network on, scripts disabled):
+Built-in expansion tables cover npm, yarn, PyPI, crates.io, Go, RubyGems, Maven, GitHub, and the major OCI registries.
+
+---
+
+## Option 3 — Two-phase install (strongest with live downloads)
+
+**The right answer if you need both live downloads and strong postinstall isolation.**
+
+Run the download and postinstall execution as separate steps with different network policies.
+
+**Phase 1 — download without scripts** (network allowed, scripts disabled):
 
 ```bash
 npm install --ignore-scripts
 ```
 
-**Phase 2 — run scripts without network** (network off, no download):
+npm fetches all packages but skips every postinstall, prepare, and build script. No untrusted code runs.
+
+**Phase 2 — run scripts without network** (network off):
 
 ```bash
-npm rebuild   # or: npm run prepare
+npm rebuild
 ```
 
-sbox does not orchestrate two-phase installs automatically today. You can model this with two dispatch rules and two profiles:
+npm runs the install scripts against the already-downloaded packages. The network is off, so scripts cannot exfiltrate anything.
+
+Model this in sbox with two profiles:
 
 ```yaml
 profiles:
@@ -133,14 +138,17 @@ profiles:
     network: on
     network_allow:
       - "*.npmjs.org"
+    writable: true
+    no_new_privileges: true
 
   scripts:
     mode: sandbox
     network: off
     writable: true
+    no_new_privileges: true
 
 dispatch:
-  npm-install-no-scripts:
+  npm-download:
     match:
       - "npm install --ignore-scripts*"
     profile: download
@@ -151,27 +159,25 @@ dispatch:
     profile: scripts
 ```
 
-Then in your workflow:
+Usage:
 
 ```bash
-sbox run -- npm install --ignore-scripts
-sbox run -- npm rebuild
+sbox run -- npm install --ignore-scripts   # downloads, no postinstall
+sbox run -- npm rebuild                    # runs postinstall, no network
 ```
 
-## What `network: off` actually blocks
+**The gap:** some packages use `prepare` scripts that genuinely need to compile native code or run build steps during install. Those may fail without network if they try to download build tools. In practice, most packages work fine with `--ignore-scripts` + `npm rebuild`.
 
-With `network: off`, the container is started with `--network none`. Inside the container:
+---
 
-- DNS lookups fail immediately
-- TCP/UDP connections to any IP fail with `ENETUNREACH`
-- `curl`, `wget`, `fetch()`, raw sockets — all fail
-- localhost connections also fail (no loopback interface)
+## Comparison
 
-Verified by the [adversarial test suite](../tests/adversarial/):
+| | `network: off` | `network_allow` | Two-phase |
+|--|----------------|-----------------|-----------|
+| Live downloads | No | Yes | Yes |
+| Blocks domain-based exfil | Yes | Yes | Yes (phase 2) |
+| Blocks hardcoded-IP exfil | Yes | No | Yes (phase 2) |
+| Complexity | Low | Low | Medium |
+| Works without cache | No | Yes | Yes |
 
-```
-✓ HTTP exfil to attacker server    [BLOCKED]
-✓ raw TCP socket to 1.1.1.1:443   [BLOCKED]
-✓ curl to external URL             [BLOCKED]
-✓ wget to external URL             [BLOCKED]
-```
+For most teams: **start with `network_allow`** pointing at your registry. If you need stronger guarantees, move to two-phase. If you have a cache, use `network: off`.

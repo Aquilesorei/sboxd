@@ -361,6 +361,8 @@ mod tests {
             secrets: Vec::new(),
             profiles: Default::default(),
             dispatch: Default::default(),
+
+            package_manager: None,
         };
 
         assert!(strict_security_enabled(&cli, &config));

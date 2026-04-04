@@ -33,6 +33,8 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
+
+            writable_paths: None,
         },
     );
     profiles.insert(
@@ -54,6 +56,8 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
+
+            writable_paths: None,
         },
     );
     profiles.insert(
@@ -75,6 +79,8 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
+
+            writable_paths: None,
         },
     );
     profiles.insert(
@@ -96,6 +102,8 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
+
+            writable_paths: None,
         },
     );
 
@@ -157,6 +165,8 @@ fn minimal_config() -> Config {
         secrets: Vec::new(),
         profiles,
         dispatch,
+
+        package_manager: None,
     }
 }
 
@@ -1028,6 +1038,8 @@ mod exclude_paths_tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
         Config {
@@ -1068,6 +1080,8 @@ mod exclude_paths_tests {
             secrets: Vec::new(),
             profiles,
             dispatch: IndexMap::new(),
+
+            package_manager: None,
         }
     }
 

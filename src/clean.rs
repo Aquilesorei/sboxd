@@ -330,6 +330,8 @@ mod tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
+
+                writable_paths: None,
             },
         );
         let config = Config {
@@ -352,6 +354,8 @@ mod tests {
             secrets: Vec::new(),
             profiles,
             dispatch: IndexMap::new(),
+
+            package_manager: None,
         };
 
         let names = reusable_session_names(&config, Path::new("/tmp/workspace"));
