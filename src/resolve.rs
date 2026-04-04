@@ -5,8 +5,8 @@ use crate::cli::{Cli, CliBackendKind, CliExecutionMode};
 use crate::config::{
     BackendKind, ImageConfig, LoadedConfig,
     model::{
-        AuditHook, CacheConfig, Config, EnvironmentConfig, ExecutionMode, MountType, ProfileConfig,
-        ScriptPolicy, SecretConfig,
+        CacheConfig, Config, EnvironmentConfig, ExecutionMode, MountType, ProfileConfig,
+        ProfileRole, SecretConfig,
     },
 };
 use crate::dispatch;
@@ -37,10 +37,10 @@ pub struct ExecutionAudit {
     pub install_style: bool,
     pub trusted_image_required: bool,
     pub sensitive_pass_through_vars: Vec<String>,
-    pub package_manager: Option<String>,
     pub lockfile: LockfileAudit,
-    pub script_hooks: ScriptHookAudit,
-    pub audit_hooks: AuditHookAudit,
+    /// Pre-run commands to execute on the host before the sandboxed command.
+    /// Each inner Vec is a tokenised command (argv), parsed from the profile's `pre_run` strings.
+    pub pre_run: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,32 +52,6 @@ pub struct LockfileAudit {
 }
 
 #[derive(Debug, Clone)]
-pub struct ScriptHookAudit {
-    pub applicable: bool,
-    pub blocked: bool,
-    pub policy: ScriptPolicyState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScriptPolicyState {
-    Allow,
-    Ignore,
-    Block,
-}
-
-#[derive(Debug, Clone)]
-pub struct AuditHookAudit {
-    pub configured: Vec<String>,
-    pub runnable: Vec<AuditHookExecution>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AuditHookExecution {
-    pub name: String,
-    pub command: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct ResolvedImage {
     pub description: String,
     pub source: ResolvedImageSource,
@@ -86,11 +60,9 @@ pub struct ResolvedImage {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ResolvedImageSource {
     Reference(String),
     Build { recipe_path: PathBuf, tag: String },
-    Preset(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +99,13 @@ pub struct ResolvedPolicy {
     pub reusable_session_name: Option<String>,
     pub cap_drop: Vec<String>,
     pub cap_add: Vec<String>,
+    pub pull_policy: Option<String>,
+    /// Resolved allow-list: `(hostname, ip)` pairs injected as `--add-host` entries.
+    /// Empty means no restriction (full network or network off).
+    pub network_allow: Vec<(String, String)>,
+    /// Original glob/regex patterns from `network_allow` that were expanded at resolve time.
+    /// Stored for plan display. Enforcement is via the resolved base-domain IPs in `network_allow`.
+    pub network_allow_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +134,8 @@ pub struct ResolvedMount {
     pub target: String,
     pub read_only: bool,
     pub is_workspace: bool,
+    /// When true, the host source directory is created automatically if it does not exist.
+    pub create: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -248,28 +229,34 @@ pub fn resolve_execution_plan(
     );
     let caches = resolve_caches(&config.caches);
     let secrets = resolve_secrets(&config.secrets, &profile_resolution.name);
-    let user = resolve_user(config);
+    let rootless = config
+        .runtime
+        .as_ref()
+        .and_then(|rt| rt.rootless)
+        .unwrap_or(true);
+    let user = resolve_user(config, rootless);
+    let install_style = is_install_style(&profile.role, &profile_resolution.name);
     let audit = ExecutionAudit {
-        install_style: is_install_style_command(command, &profile_resolution.name),
-        trusted_image_required: profile.require_pinned_image.unwrap_or(false),
+        install_style,
+        trusted_image_required: profile.require_pinned_image.unwrap_or(false)
+            || config
+                .runtime
+                .as_ref()
+                .and_then(|rt| rt.require_pinned_image)
+                .unwrap_or(false),
         sensitive_pass_through_vars: resolved_sensitive_pass_through_vars(&environment),
-        package_manager: detect_package_manager(command).map(str::to_string),
         lockfile: resolve_lockfile_audit(
-            command,
+            &profile.lockfile_files,
+            install_style,
             &resolved_workspace.effective_host_dir,
             profile.require_lockfile,
         ),
-        script_hooks: resolve_script_hook_audit(
-            command,
-            &environment,
-            profile.script_policy.clone(),
-        ),
-        audit_hooks: resolve_audit_hook_audit(command, &profile.audit_hooks),
+        pre_run: parse_pre_run_commands(&profile.pre_run),
     };
 
     Ok(ExecutionPlan {
-        command: command.to_vec(),
         command_string: dispatch::command_string(command),
+        command: command.to_vec(),
         backend,
         image,
         profile_name: profile_resolution.name,
@@ -382,8 +369,38 @@ fn resolve_backend(cli: &Cli, config: &Config) -> BackendKind {
             .runtime
             .as_ref()
             .and_then(|runtime| runtime.backend.clone())
-            .expect("validated backend"),
+            .unwrap_or_else(detect_backend),
     }
+}
+
+fn detect_backend() -> BackendKind {
+    // Probe PATH: prefer podman (rootless-first), fall back to docker.
+    if which_on_path("podman") {
+        return BackendKind::Podman;
+    }
+    if which_on_path("docker") {
+        return BackendKind::Docker;
+    }
+    // Default to podman — execution will fail with a clear "backend unavailable" error.
+    BackendKind::Podman
+}
+
+pub(crate) fn which_on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path_os| {
+            std::env::split_paths(&path_os).any(|dir| {
+                let candidate = dir.join(name);
+                candidate.is_file()
+                    && {
+                        use std::os::unix::fs::PermissionsExt;
+                        candidate
+                            .metadata()
+                            .map(|m| m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false)
+                    }
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn resolve_image(
@@ -481,11 +498,8 @@ fn resolve_image(
         });
     }
 
-    Ok(ResolvedImage {
-        description: "<missing>".to_string(),
-        source: ResolvedImageSource::Preset("<missing>".to_string()),
-        trust: ImageTrust::MutableReference,
-        verify_signature: false,
+    Err(SboxError::ConfigValidation {
+        message: "`image` must define exactly one of `ref`, `build`, or `preset`".to_string(),
     })
 }
 
@@ -528,6 +542,27 @@ fn resolve_policy(
             .unwrap_or(false)
     });
 
+    let pull_policy = profile
+        .image
+        .as_ref()
+        .and_then(|img| img.pull_policy.as_ref())
+        .or_else(|| {
+            config
+                .image
+                .as_ref()
+                .and_then(|img| img.pull_policy.as_ref())
+        })
+        .or_else(|| {
+            config
+                .runtime
+                .as_ref()
+                .and_then(|rt| rt.pull_policy.as_ref())
+        })
+        .map(pull_policy_flag);
+
+    let network_allow_resolved =
+        resolve_network_allow(&profile.network_allow, &profile.network);
+
     ResolvedPolicy {
         network: profile.network.clone().unwrap_or_else(|| "off".to_string()),
         writable: profile.writable.unwrap_or(true),
@@ -543,19 +578,153 @@ fn resolve_policy(
             .then(|| reusable_session_name(config, workspace_root, profile_name)),
         cap_drop,
         cap_add,
+        pull_policy,
+        network_allow: network_allow_resolved.0,
+        network_allow_patterns: network_allow_resolved.1,
+    }
+}
+
+fn pull_policy_flag(policy: &crate::config::model::PullPolicy) -> String {
+    match policy {
+        crate::config::model::PullPolicy::Always => "always".to_string(),
+        crate::config::model::PullPolicy::IfMissing => "missing".to_string(),
+        crate::config::model::PullPolicy::Never => "never".to_string(),
     }
 }
 
 fn resolve_capabilities(profile: &ProfileConfig) -> (Vec<String>, Vec<String>) {
     match &profile.capabilities {
+        Some(crate::config::model::CapabilitiesSpec::Structured(cfg)) => {
+            (cfg.drop.clone(), cfg.add.clone())
+        }
         Some(crate::config::model::CapabilitiesSpec::Keyword(keyword)) if keyword == "drop-all" => {
             (vec!["all".to_string()], Vec::new())
         }
         Some(crate::config::model::CapabilitiesSpec::List(values)) => (Vec::new(), values.clone()),
-        Some(crate::config::model::CapabilitiesSpec::Keyword(keyword)) => {
-            (Vec::new(), vec![keyword.clone()])
+        Some(crate::config::model::CapabilitiesSpec::Keyword(_)) => {
+            // Rejected by validation; unreachable in a valid config.
+            (Vec::new(), Vec::new())
         }
         None => (Vec::new(), Vec::new()),
+    }
+}
+
+/// Resolve `network_allow` entries to `(hostname, ip)` pairs plus raw patterns.
+///
+/// Each entry is either:
+/// - An exact hostname (`registry.npmjs.org`) → DNS-resolved to `(hostname, ip)` pairs
+/// - A glob pattern (`*.npmjs.org`) → base domain resolved + original pattern recorded
+/// - A regex-style prefix pattern (`.*\.npmjs\.org`) → same as glob
+///
+/// Returns `(resolved_pairs, patterns)`.
+/// Only active when `network` is not `off`.
+fn resolve_network_allow(
+    domains: &[String],
+    network: &Option<String>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    if domains.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    if network.as_deref() == Some("off") {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut patterns: Vec<String> = Vec::new();
+
+    for entry in domains {
+        if let Some(base) = extract_pattern_base(entry) {
+            // It's a glob/regex pattern — store the original, expand to known subdomains.
+            patterns.push(entry.clone());
+            for hostname in expand_pattern_hosts(&base) {
+                resolve_hostname_into(&hostname, &mut entries);
+            }
+        } else {
+            resolve_hostname_into(entry, &mut entries);
+        }
+    }
+
+    (entries, patterns)
+}
+
+/// Expand a base domain to the set of hostnames to resolve for a wildcard pattern.
+///
+/// For well-known package registry domains we enumerate the subdomains that package
+/// managers actually use, so `*.npmjs.org` resolves `registry.npmjs.org` and friends
+/// rather than just `npmjs.org` itself.  For unknown domains the base is returned as-is.
+fn expand_pattern_hosts(base: &str) -> Vec<String> {
+    const KNOWN: &[(&str, &[&str])] = &[
+        // npm / yarn
+        ("npmjs.org",          &["registry.npmjs.org", "npmjs.org", "www.npmjs.org"]),
+        ("yarnpkg.com",        &["registry.yarnpkg.com", "yarnpkg.com"]),
+        // Python
+        ("pypi.org",           &["pypi.org", "files.pythonhosted.org"]),
+        ("pythonhosted.org",   &["files.pythonhosted.org", "pythonhosted.org"]),
+        // Rust
+        ("crates.io",          &["crates.io", "static.crates.io", "index.crates.io"]),
+        // Go
+        ("golang.org",         &["proxy.golang.org", "sum.golang.org", "golang.org"]),
+        ("go.dev",             &["proxy.golang.dev", "sum.golang.dev", "go.dev"]),
+        // Ruby
+        ("rubygems.org",       &["rubygems.org", "api.rubygems.org", "index.rubygems.org"]),
+        // Java / Gradle / Maven
+        ("maven.org",          &["repo1.maven.org", "central.maven.org"]),
+        ("gradle.org",         &["plugins.gradle.org", "services.gradle.org", "gradle.org"]),
+        // GitHub (source deps)
+        ("github.com",         &["github.com", "api.github.com", "raw.githubusercontent.com",
+                                  "objects.githubusercontent.com", "codeload.github.com"]),
+        ("githubusercontent.com", &["raw.githubusercontent.com", "objects.githubusercontent.com",
+                                     "avatars.githubusercontent.com"]),
+        // Docker / OCI registries
+        ("docker.io",          &["registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com"]),
+        ("ghcr.io",            &["ghcr.io"]),
+        ("gcr.io",             &["gcr.io"]),
+    ];
+
+    for (domain, subdomains) in KNOWN {
+        if base == *domain {
+            return subdomains.iter().map(|s| s.to_string()).collect();
+        }
+    }
+
+    // Unknown domain — resolve just the base; a DNS proxy would be needed for full wildcard coverage.
+    vec![base.to_string()]
+}
+
+/// Return the concrete base domain for a glob/regex pattern, or `None` if the entry is exact.
+///
+/// Supported forms:
+/// - `*.example.com`        → `example.com`
+/// - `.*\.example\.com`     → `example.com`   (regex prefix `.*\.`)
+/// - `.example.com`         → `example.com`   (leading-dot notation)
+fn extract_pattern_base(entry: &str) -> Option<String> {
+    // Glob: *.example.com
+    if let Some(rest) = entry.strip_prefix("*.") {
+        return Some(rest.to_string());
+    }
+    // Regex: .*\.example\.com — strip leading `.*\.` and unescape `\.` → `.`
+    if let Some(rest) = entry.strip_prefix(".*\\.") {
+        return Some(rest.replace("\\.", "."));
+    }
+    // Leading-dot notation: .example.com
+    if let Some(rest) = entry.strip_prefix('.') {
+        if !rest.is_empty() {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// DNS-resolve `hostname` and append unique `(hostname, ip)` pairs into `entries`.
+fn resolve_hostname_into(hostname: &str, entries: &mut Vec<(String, String)>) {
+    let addr = format!("{hostname}:443");
+    if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&addr.as_str()) {
+        for socket_addr in addrs {
+            let ip = socket_addr.ip().to_string();
+            if !entries.iter().any(|(h, a)| h == hostname && a == &ip) {
+                entries.push((hostname.to_string(), ip));
+            }
+        }
     }
 }
 
@@ -609,50 +778,19 @@ fn resolved_sensitive_pass_through_vars(environment: &ResolvedEnvironment) -> Ve
         .collect()
 }
 
-fn is_install_style_command(command: &[String], profile_name: &str) -> bool {
-    let joined = command.join(" ");
-    let command_match = [
-        "npm install",
-        "npm ci",
-        "npm update",
-        "npm prune",
-        "npm rebuild",
-        "pnpm install",
-        "pnpm add",
-        "pnpm update",
-        "pnpm up",
-        "pnpm fetch",
-        "yarn install",
-        "yarn add",
-        "yarn up",
-        "yarn remove",
-        "bun install",
-        "bun add",
-        "bun update",
-        "pip install",
-        "uv sync",
-        "poetry install",
-        "poetry sync",
-        "poetry add",
-        "poetry update",
-        "cargo install",
-        "go get",
-        "go install",
-        "go work sync",
-        "go install",
-        "composer install",
-        "composer update",
-        "composer require",
-    ]
-    .iter()
-    .any(|pattern| joined.starts_with(pattern));
-
-    let profile_match = matches!(
-        profile_name,
-        "install" | "deps" | "dependency-install" | "bootstrap"
-    ) || profile_name.contains("install");
-
-    command_match || profile_match
+/// Returns true when the resolved profile declares itself as an install profile.
+/// Falls back to well-known profile-name conventions when no explicit role is set.
+fn is_install_style(role: &Option<ProfileRole>, profile_name: &str) -> bool {
+    match role {
+        Some(ProfileRole::Install) => true,
+        Some(_) => false,
+        None => {
+            matches!(
+                profile_name,
+                "install" | "deps" | "dependency-install" | "bootstrap"
+            ) || profile_name.contains("install")
+        }
+    }
 }
 
 fn looks_like_sensitive_env(name: &str) -> bool {
@@ -676,6 +814,103 @@ fn looks_like_sensitive_env(name: &str) -> bool {
     EXACT.contains(&name) || PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
+/// Walk `dir` recursively and collect paths of files that match `pattern`.
+/// Skips large build/tool directories (.git, node_modules, target, .venv) for performance.
+/// Does not follow symlinks.
+fn collect_excluded_files(workspace_root: &Path, dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        // Never follow symlinks — avoids loops and unintended host path access
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Skip large build/tool dirs that don't contain user credentials
+            if matches!(
+                name,
+                ".git"
+                    | "node_modules"
+                    | "target"
+                    | ".venv"
+                    | "__pycache__"
+                    | "vendor"
+                    | "dist"
+                    | "build"
+                    | ".cache"
+                    | ".gradle"
+                    | ".tox"
+            ) {
+                continue;
+            }
+            collect_excluded_files(workspace_root, &path, pattern, out);
+        } else if file_type.is_file() {
+            if let Ok(rel) = path.strip_prefix(workspace_root) {
+                let rel_str = rel.to_string_lossy();
+                if exclude_pattern_matches(&rel_str, pattern) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+}
+
+/// Return true if `relative_path` (e.g. `"config/.env"`) matches `pattern`.
+///
+/// Pattern rules:
+/// - Leading `**/` is stripped; the rest is matched against the filename only
+///   unless it contains a `/`, in which case it is matched against the full relative path.
+/// - `*` matches any sequence of characters within a single path component.
+pub(crate) fn exclude_pattern_matches(relative_path: &str, pattern: &str) -> bool {
+    let effective = pattern.trim_start_matches("**/");
+    if effective.contains('/') {
+        // Path-relative pattern: match against the full relative path
+        glob_match(relative_path, effective)
+    } else {
+        // Filename-only pattern: match only the last path component
+        let filename = relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(relative_path);
+        glob_match(filename, effective)
+    }
+}
+
+/// Simple glob matcher supporting `*` wildcards (no path-separator crossing).
+pub(crate) fn glob_match(s: &str, pattern: &str) -> bool {
+    if !pattern.contains('*') {
+        return s == pattern;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut remaining = s;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            if !remaining.starts_with(part) {
+                return false;
+            }
+            remaining = &remaining[part.len()..];
+        } else if i == parts.len() - 1 {
+            return remaining.ends_with(part);
+        } else {
+            match remaining.find(part) {
+                Some(pos) => remaining = &remaining[pos + part.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
 fn resolve_mounts(
     config: &Config,
     workspace_root: &Path,
@@ -695,7 +930,28 @@ fn resolve_mounts(
         target: workspace_mount.to_string(),
         read_only: !workspace_writable,
         is_workspace: true,
+        create: false,
     }];
+
+    // When the workspace is read-only, inject rw bind mounts for each writable_path.
+    // These are mounted after the workspace so Podman's mount ordering gives them precedence.
+    if !workspace_writable {
+        let writable_paths = config
+            .workspace
+            .as_ref()
+            .map(|ws| ws.writable_paths.as_slice())
+            .unwrap_or(&[]);
+        for rel_path in writable_paths {
+            mounts.push(ResolvedMount {
+                kind: "bind".to_string(),
+                source: Some(workspace_root.join(rel_path)),
+                target: format!("{workspace_mount}/{rel_path}"),
+                read_only: false,
+                is_workspace: true,
+                create: true,
+            });
+        }
+    }
 
     for mount in &config.mounts {
         let source = match mount.mount_type {
@@ -715,7 +971,33 @@ fn resolve_mounts(
             target: mount.target.clone().expect("validated mount target"),
             read_only: mount.read_only.unwrap_or(false),
             is_workspace: false,
+            create: false,
         });
+    }
+
+    // Mask credential/secret files with /dev/null overlays — independent of workspace writability.
+    // These mounts are added last so they take precedence over the workspace bind mount.
+    let exclude_patterns = config
+        .workspace
+        .as_ref()
+        .map(|ws| ws.exclude_paths.as_slice())
+        .unwrap_or(&[]);
+    for pattern in exclude_patterns {
+        let mut matched = Vec::new();
+        collect_excluded_files(workspace_root, workspace_root, pattern, &mut matched);
+        for host_path in matched {
+            if let Ok(rel) = host_path.strip_prefix(workspace_root) {
+                let target = format!("{workspace_mount}/{}", rel.display());
+                mounts.push(ResolvedMount {
+                    kind: "mask".to_string(),
+                    source: None,
+                    target,
+                    read_only: true,
+                    is_workspace: true,
+                    create: false,
+                });
+            }
+        }
     }
 
     mounts
@@ -751,14 +1033,15 @@ fn resolve_secrets(secrets: &[SecretConfig], active_profile: &str) -> Vec<Resolv
         .collect()
 }
 
-fn resolve_user(config: &Config) -> ResolvedUser {
+fn resolve_user(config: &Config, rootless: bool) -> ResolvedUser {
     match config.identity.as_ref() {
         Some(identity) => match (identity.uid, identity.gid) {
             (Some(uid), Some(gid)) => ResolvedUser::Explicit { uid, gid },
-            _ if identity.map_user.unwrap_or(true) => ResolvedUser::KeepId,
+            _ if identity.map_user.unwrap_or(rootless) => ResolvedUser::KeepId,
             _ => ResolvedUser::Default,
         },
-        None => ResolvedUser::KeepId,
+        None if rootless => ResolvedUser::KeepId,
+        None => ResolvedUser::Default,
     }
 }
 
@@ -867,29 +1150,15 @@ fn classify_reference_trust(reference: &str, digest: Option<&str>) -> ImageTrust
     }
 }
 
-fn detect_package_manager(command: &[String]) -> Option<&'static str> {
-    match command.first().map(String::as_str) {
-        Some("npm") => Some("npm"),
-        Some("pnpm") => Some("pnpm"),
-        Some("yarn") => Some("yarn"),
-        Some("bun") => Some("bun"),
-        Some("uv") => Some("uv"),
-        Some("poetry") => Some("poetry"),
-        Some("pip") | Some("pip3") => Some("pip"),
-        Some("cargo") => Some("cargo"),
-        Some("go") => Some("go"),
-        Some("composer") => Some("composer"),
-        _ => None,
-    }
-}
 
+/// Resolve lockfile audit from the profile's explicit `lockfile_files` list.
 fn resolve_lockfile_audit(
-    command: &[String],
+    lockfile_files: &[String],
+    install_style: bool,
     project_dir: &Path,
     require_lockfile: Option<bool>,
 ) -> LockfileAudit {
-    let expected_files = expected_lockfiles(command);
-    if expected_files.is_empty() {
+    if !install_style || lockfile_files.is_empty() {
         return LockfileAudit {
             applicable: false,
             required: require_lockfile.unwrap_or(false),
@@ -898,7 +1167,7 @@ fn resolve_lockfile_audit(
         };
     }
 
-    let present = expected_files
+    let present = lockfile_files
         .iter()
         .any(|candidate| project_dir.join(candidate).exists());
 
@@ -906,230 +1175,20 @@ fn resolve_lockfile_audit(
         applicable: true,
         required: require_lockfile.unwrap_or(true),
         present,
-        expected_files: expected_files.into_iter().map(str::to_string).collect(),
+        expected_files: lockfile_files.to_vec(),
     }
 }
 
-fn expected_lockfiles(command: &[String]) -> Vec<&'static str> {
-    match command.first().map(String::as_str) {
-        Some("uv") if command.get(1).map(String::as_str) == Some("sync") => vec!["uv.lock"],
-        Some("npm") if npm_lockfile_expected(command) => {
-            vec!["package-lock.json", "npm-shrinkwrap.json"]
-        }
-        Some("pnpm") if pnpm_lockfile_expected(command) => vec!["pnpm-lock.yaml"],
-        Some("yarn") if yarn_lockfile_expected(command) => vec!["yarn.lock"],
-        Some("bun") if bun_lockfile_expected(command) => vec!["bun.lock", "bun.lockb"],
-        Some("poetry") if poetry_lockfile_expected(command) => vec!["poetry.lock"],
-        Some("cargo") if cargo_lockfile_expected(command) => vec!["Cargo.lock"],
-        Some("composer") if composer_lockfile_expected(command) => vec!["composer.lock"],
-        Some("go") if go_lockfile_expected(command) => vec!["go.sum"],
-        _ => Vec::new(),
-    }
-}
-
-fn npm_lockfile_expected(command: &[String]) -> bool {
-    if !matches!(
-        command.get(1).map(String::as_str),
-        Some("install") | Some("ci") | Some("update") | Some("prune") | Some("rebuild")
-    )
-    {
-        return false;
-    }
-
-    let has_explicit_target = command.iter().skip(2).any(|arg| {
-        !arg.starts_with('-') && (arg.contains('/') || arg.ends_with(".tgz") || arg.contains('@'))
-    });
-
-    !has_explicit_target
-}
-
-fn pnpm_lockfile_expected(command: &[String]) -> bool {
-    matches!(
-        command.get(1).map(String::as_str),
-        Some("install") | Some("add") | Some("update") | Some("up") | Some("fetch")
-    )
-}
-
-fn yarn_lockfile_expected(command: &[String]) -> bool {
-    matches!(
-        command.get(1).map(String::as_str),
-        Some("install") | Some("add") | Some("up") | Some("remove")
-    )
-}
-
-fn bun_lockfile_expected(command: &[String]) -> bool {
-    matches!(
-        command.get(1).map(String::as_str),
-        Some("install") | Some("add") | Some("update")
-    )
-}
-
-fn poetry_lockfile_expected(command: &[String]) -> bool {
-    matches!(
-        command.get(1).map(String::as_str),
-        Some("install") | Some("sync") | Some("add") | Some("update")
-    )
-}
-
-fn cargo_lockfile_expected(command: &[String]) -> bool {
-    if command.get(1).map(String::as_str) != Some("install") {
-        return false;
-    }
-
-    command.iter().skip(2).any(|arg| arg == "--path" || arg == "--git")
-}
-
-fn composer_lockfile_expected(command: &[String]) -> bool {
-    matches!(
-        command.get(1).map(String::as_str),
-        Some("install") | Some("update") | Some("require")
-    )
-}
-
-fn go_lockfile_expected(command: &[String]) -> bool {
-    matches!(
-        command.get(1).map(String::as_str),
-        Some("get") | Some("install")
-    )
-}
-
-fn resolve_script_hook_audit(
-    command: &[String],
-    environment: &ResolvedEnvironment,
-    configured_policy: Option<ScriptPolicy>,
-) -> ScriptHookAudit {
-    let applicable = is_script_capable_command(command);
-
-    if !applicable {
-        return ScriptHookAudit {
-            applicable: false,
-            blocked: false,
-            policy: configured_policy
-                .map(script_policy_state)
-                .unwrap_or(ScriptPolicyState::Allow),
-        };
-    }
-
-    let blocked = command.iter().any(|arg| arg == "--ignore-scripts")
-        || environment.variables.iter().any(|variable| {
-            (variable.name.eq_ignore_ascii_case("npm_config_ignore_scripts")
-                || variable
-                    .name
-                    .eq_ignore_ascii_case("BUN_INSTALL_IGNORE_SCRIPTS"))
-                && is_truthy_env_value(&variable.value)
-        });
-    ScriptHookAudit {
-        applicable: true,
-        blocked,
-        policy: configured_policy
-            .map(script_policy_state)
-            .unwrap_or(ScriptPolicyState::Allow),
-    }
-}
-
-fn script_policy_state(policy: ScriptPolicy) -> ScriptPolicyState {
-    match policy {
-        ScriptPolicy::Allow => ScriptPolicyState::Allow,
-        ScriptPolicy::Ignore => ScriptPolicyState::Ignore,
-        ScriptPolicy::Block => ScriptPolicyState::Block,
-    }
-}
-
-fn is_truthy_env_value(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn is_script_capable_command(command: &[String]) -> bool {
-    match (
-        detect_package_manager(command),
-        command.get(1).map(String::as_str),
-    ) {
-        (Some("npm"), Some(subcommand)) => {
-            matches!(subcommand, "install" | "ci" | "update" | "rebuild")
-        }
-        (Some("pnpm"), Some(subcommand)) => {
-            matches!(subcommand, "install" | "add" | "update" | "up" | "rebuild")
-        }
-        (Some("yarn"), Some(subcommand)) => matches!(subcommand, "install" | "add" | "up"),
-        (Some("bun"), Some(subcommand)) => matches!(subcommand, "install" | "add" | "update"),
-        _ => false,
-    }
-}
-
-fn resolve_audit_hook_audit(command: &[String], hooks: &[AuditHook]) -> AuditHookAudit {
-    let configured = hooks
+/// Parse `pre_run` strings (e.g. `"npm audit --audit-level=high"`) into argv vecs.
+/// Uses simple whitespace splitting — no shell quoting support needed for command names.
+fn parse_pre_run_commands(pre_run: &[String]) -> Vec<Vec<String>> {
+    pre_run
         .iter()
-        .map(audit_hook_name)
-        .map(str::to_string)
-        .collect();
-    let runnable = hooks
-        .iter()
-        .filter_map(|hook| audit_hook_command(hook, command).map(|command| AuditHookExecution {
-            name: audit_hook_name(hook).to_string(),
-            command,
-        }))
-        .collect();
-
-    AuditHookAudit {
-        configured,
-        runnable,
-    }
-}
-
-fn audit_hook_name(hook: &AuditHook) -> &'static str {
-    match hook {
-        AuditHook::NpmAudit => "npm-audit",
-        AuditHook::PnpmAudit => "pnpm-audit",
-        AuditHook::YarnAudit => "yarn-audit",
-        AuditHook::PipAudit => "pip-audit",
-        AuditHook::CargoAudit => "cargo-audit",
-        AuditHook::BunAudit => "bun-audit",
-        AuditHook::ComposerAudit => "composer-audit",
-        AuditHook::GoAudit => "go-audit",
-    }
-}
-
-pub(crate) fn audit_hook_command(hook: &AuditHook, command: &[String]) -> Option<Vec<String>> {
-    match (hook, detect_package_manager(command)?) {
-        (AuditHook::NpmAudit, "npm") => Some(vec![
-            "npm".to_string(),
-            "audit".to_string(),
-            "--audit-level=high".to_string(),
-        ]),
-        (AuditHook::PnpmAudit, "pnpm") => Some(vec![
-            "pnpm".to_string(),
-            "audit".to_string(),
-            "--audit-level=high".to_string(),
-        ]),
-        (AuditHook::YarnAudit, "yarn") => Some(vec![
-            "yarn".to_string(),
-            "npm".to_string(),
-            "audit".to_string(),
-            "--severity".to_string(),
-            "high".to_string(),
-        ]),
-        (AuditHook::PipAudit, "pip") => Some(vec!["pip-audit".to_string()]),
-        (AuditHook::CargoAudit, "cargo") => Some(vec![
-            "cargo".to_string(),
-            "audit".to_string(),
-        ]),
-        (AuditHook::BunAudit, "bun") => Some(vec![
-            "bun".to_string(),
-            "audit".to_string(),
-        ]),
-        (AuditHook::ComposerAudit, "composer") => Some(vec![
-            "composer".to_string(),
-            "audit".to_string(),
-        ]),
-        (AuditHook::GoAudit, "go") => Some(vec![
-            "govulncheck".to_string(),
-            "./...".to_string(),
-        ]),
-        _ => None,
-    }
+        .filter_map(|s| {
+            let tokens: Vec<String> = s.split_whitespace().map(str::to_string).collect();
+            if tokens.is_empty() { None } else { Some(tokens) }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1138,18 +1197,17 @@ mod tests {
 
     use super::{
         ImageTrust, ProfileSource, ResolutionTarget, ResolvedImageSource, ResolvedUser,
-        ScriptPolicyState, audit_hook_command, resolve_execution_plan,
+        resolve_execution_plan,
     };
     use crate::cli::{Cli, Commands, PlanCommand};
     use crate::config::{
         BackendKind,
         load::LoadedConfig,
         model::{
-            AuditHook, Config, DispatchRule, EnvironmentConfig, ExecutionMode, ImageConfig,
-            ProfileConfig, RuntimeConfig, ScriptPolicy, WorkspaceConfig,
+            Config, DispatchRule, ExecutionMode, ImageConfig,
+            ProfileConfig, ProfileRole, RuntimeConfig, WorkspaceConfig,
         },
     };
-    use std::collections::BTreeMap;
 
     fn base_cli() -> Cli {
         Cli {
@@ -1163,6 +1221,7 @@ mod tests {
             verbose: 0,
             quiet: false,
             command: Commands::Plan(PlanCommand {
+                show_command: false,
                 command: vec!["npm".into(), "install".into()],
             }),
         }
@@ -1179,9 +1238,11 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-                script_policy: None,
+                role: None,
+                lockfile_files: Vec::new(),
+                pre_run: Vec::new(),
+                network_allow: Vec::new(),
                 ports: Vec::new(),
-                audit_hooks: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
@@ -1198,9 +1259,11 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-                script_policy: None,
+                role: Some(ProfileRole::Install),
+                lockfile_files: Vec::new(),
+                pre_run: Vec::new(),
+                network_allow: Vec::new(),
                 ports: Vec::new(),
-                audit_hooks: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
@@ -1227,11 +1290,14 @@ mod tests {
                 container_name: None,
                 pull_policy: None,
                 strict_security: None,
+                require_pinned_image: None,
             }),
             workspace: Some(WorkspaceConfig {
                 root: None,
                 mount: Some("/workspace".to_string()),
                 writable: Some(true),
+                writable_paths: Vec::new(),
+                exclude_paths: Vec::new(),
             }),
             identity: None,
             image: Some(ImageConfig {
@@ -1362,7 +1428,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_marks_install_style_profiles() {
+    fn install_role_marks_install_style() {
         let cli = base_cli();
         let plan = resolve_execution_plan(
             &cli,
@@ -1372,6 +1438,7 @@ mod tests {
         )
         .expect("resolution should succeed");
 
+        // dispatched to "install" profile which has role: install
         assert!(plan.audit.install_style);
         assert!(!plan.audit.trusted_image_required);
     }
@@ -1458,14 +1525,12 @@ mod tests {
     }
 
     #[test]
-    fn profile_can_require_lockfile_without_strict_mode() {
+    fn profile_lockfile_files_drive_lockfile_audit() {
         let cli = base_cli();
         let mut config = base_config();
-        config
-            .profiles
-            .get_mut("install")
-            .expect("install profile exists")
-            .require_lockfile = Some(true);
+        let profile = config.profiles.get_mut("install").expect("install profile exists");
+        profile.require_lockfile = Some(true);
+        profile.lockfile_files = vec!["package-lock.json".to_string(), "npm-shrinkwrap.json".to_string()];
 
         let plan = resolve_execution_plan(
             &cli,
@@ -1477,25 +1542,21 @@ mod tests {
 
         assert!(plan.audit.lockfile.applicable);
         assert!(plan.audit.lockfile.required);
+        assert_eq!(
+            plan.audit.lockfile.expected_files,
+            vec!["package-lock.json", "npm-shrinkwrap.json"]
+        );
     }
 
     #[test]
-    fn script_policy_detects_ignore_scripts_from_environment() {
+    fn pre_run_parses_into_argv_vecs() {
         let cli = base_cli();
         let mut config = base_config();
-        config.environment = Some(EnvironmentConfig {
-            pass_through: Vec::new(),
-            set: BTreeMap::from([(
-                "npm_config_ignore_scripts".to_string(),
-                "true".to_string(),
-            )]),
-            deny: Vec::new(),
-        });
         config
             .profiles
             .get_mut("install")
             .expect("install profile exists")
-            .script_policy = Some(ScriptPolicy::Ignore);
+            .pre_run = vec!["npm audit --audit-level=high".to_string(), "echo done".to_string()];
 
         let plan = resolve_execution_plan(
             &cli,
@@ -1505,112 +1566,117 @@ mod tests {
         )
         .expect("resolution should succeed");
 
-        assert!(plan.audit.script_hooks.applicable);
-        assert!(plan.audit.script_hooks.blocked);
-        assert_eq!(plan.audit.script_hooks.policy, ScriptPolicyState::Ignore);
+        assert_eq!(plan.audit.pre_run.len(), 2);
+        assert_eq!(plan.audit.pre_run[0], vec!["npm", "audit", "--audit-level=high"]);
+        assert_eq!(plan.audit.pre_run[1], vec!["echo", "done"]);
     }
 
     #[test]
-    fn audit_hook_command_matches_package_manager() {
-        let npm = audit_hook_command(
-            &AuditHook::NpmAudit,
-            &["npm".into(), "install".into()],
-        )
-        .expect("npm hook should apply");
-        assert_eq!(npm, vec!["npm", "audit", "--audit-level=high"]);
+    fn no_role_profile_name_heuristic_still_marks_install_style() {
+        let cli = base_cli();
+        let mut config = base_config();
+        // "deps" profile name matches the heuristic even without an explicit role
+        config.profiles.insert(
+            "deps".to_string(),
+            ProfileConfig {
+                mode: ExecutionMode::Sandbox,
+                image: None,
+                network: Some("on".to_string()),
+                writable: Some(true),
+                require_pinned_image: None,
+                require_lockfile: None,
+                role: None,
+                lockfile_files: Vec::new(),
+                pre_run: Vec::new(),
+                network_allow: Vec::new(),
+                ports: Vec::new(),
+                capabilities: None,
+                no_new_privileges: Some(true),
+                read_only_rootfs: None,
+                reuse_container: None,
+                shell: None,
+            },
+        );
+        config.dispatch.insert(
+            "uv-sync".to_string(),
+            crate::config::model::DispatchRule {
+                patterns: vec!["uv sync".to_string()],
+                profile: "deps".to_string(),
+            },
+        );
 
-        let pip = audit_hook_command(
-            &AuditHook::PipAudit,
-            &["pip".into(), "install".into(), "requests".into()],
-        )
-        .expect("pip hook should apply");
-        assert_eq!(pip, vec!["pip-audit"]);
-
-        let cargo = audit_hook_command(
-            &AuditHook::CargoAudit,
-            &["cargo".into(), "install".into(), "--path".into(), ".".into()],
-        )
-        .expect("cargo hook should apply");
-        assert_eq!(cargo, vec!["cargo", "audit"]);
-
-        let bun = audit_hook_command(
-            &AuditHook::BunAudit,
-            &["bun".into(), "install".into()],
-        )
-        .expect("bun hook should apply");
-        assert_eq!(bun, vec!["bun", "audit"]);
-
-        let composer = audit_hook_command(
-            &AuditHook::ComposerAudit,
-            &["composer".into(), "install".into()],
-        )
-        .expect("composer hook should apply");
-        assert_eq!(composer, vec!["composer", "audit"]);
-
-        let go = audit_hook_command(
-            &AuditHook::GoAudit,
-            &["go".into(), "get".into(), "./...".into()],
-        )
-        .expect("go hook should apply");
-        assert_eq!(go, vec!["govulncheck", "./..."]);
-
-        assert!(audit_hook_command(
-            &AuditHook::NpmAudit,
+        let plan = resolve_execution_plan(
+            &cli,
+            &loaded_config(config),
+            ResolutionTarget::Plan,
             &["uv".into(), "sync".into()],
         )
-        .is_none());
+        .expect("resolution should succeed");
+
+        assert_eq!(plan.profile_name, "deps");
+        assert!(plan.audit.install_style); // heuristic via name "deps"
     }
 
     #[test]
-    fn bun_install_has_lockfile_audit() {
-        let cli = base_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded_config(base_config()),
-            ResolutionTarget::Plan,
-            &["bun".into(), "install".into()],
-        )
-        .expect("resolution should succeed");
+    fn glob_match_exact_and_prefix_suffix_wildcards() {
+        use super::glob_match;
 
-        assert_eq!(plan.audit.package_manager.as_deref(), Some("bun"));
-        assert!(plan.audit.lockfile.applicable);
-        assert_eq!(
-            plan.audit.lockfile.expected_files,
-            vec!["bun.lock".to_string(), "bun.lockb".to_string()]
-        );
-        assert!(plan.audit.script_hooks.applicable);
+        // Exact match (no wildcard)
+        assert!(glob_match("file.pem", "file.pem"));
+        assert!(!glob_match("file.pem", "other.pem"));
+
+        // Suffix wildcard: *.pem
+        assert!(glob_match("file.pem", "*.pem"));
+        assert!(glob_match(".pem", "*.pem"));
+        assert!(!glob_match("pem", "*.pem"));
+        assert!(!glob_match("file.pem.bak", "*.pem"));
+
+        // Prefix wildcard: .env.*
+        assert!(glob_match(".env.local", ".env.*"));
+        assert!(glob_match(".env.production", ".env.*"));
+        assert!(!glob_match(".env", ".env.*"));
+
+        // Trailing wildcard: secrets*
+        assert!(glob_match("secrets", "secrets*"));
+        assert!(glob_match("secrets.json", "secrets*"));
+        assert!(!glob_match("not-secrets", "secrets*"));
+
+        // Both-ends wildcard: *.key.*
+        assert!(glob_match("my.key.bak", "*.key.*"));
+        assert!(glob_match("a.key.b", "*.key.*"));
+        assert!(!glob_match("key.bak", "*.key.*"));
+        assert!(!glob_match("my.key", "*.key.*"));
+
+        // Three-wildcard pattern: a*b*c
+        assert!(glob_match("abc", "a*b*c"));
+        assert!(glob_match("aXbYc", "a*b*c"));
+        assert!(glob_match("abbc", "a*b*c"));
+        assert!(!glob_match("ac", "a*b*c"));
+        assert!(!glob_match("aXbYd", "a*b*c"));
+
+        // Pattern with no anchoring (*a*b*)
+        assert!(glob_match("XaYbZ", "*a*b*"));
+        assert!(glob_match("ab", "*a*b*"));
+        assert!(!glob_match("ba", "*a*b*"));
+        assert!(!glob_match("XaZ", "*a*b*"));
     }
 
     #[test]
-    fn poetry_install_has_lockfile_audit() {
-        let cli = base_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded_config(base_config()),
-            ResolutionTarget::Plan,
-            &["poetry".into(), "install".into()],
-        )
-        .expect("resolution should succeed");
+    fn glob_match_path_patterns() {
+        use super::exclude_pattern_matches;
 
-        assert_eq!(plan.audit.package_manager.as_deref(), Some("poetry"));
-        assert!(plan.audit.lockfile.applicable);
-        assert_eq!(plan.audit.lockfile.expected_files, vec!["poetry.lock".to_string()]);
-        assert!(!plan.audit.script_hooks.applicable);
-    }
+        // Filename-only pattern (no slash): matches against filename
+        assert!(exclude_pattern_matches("dir/file.pem", "*.pem"));
+        assert!(exclude_pattern_matches("deep/nested/file.key", "*.key"));
+        assert!(!exclude_pattern_matches("dir/file.pem.bak", "*.pem"));
 
-    #[test]
-    fn cargo_install_with_path_has_lockfile_audit() {
-        let cli = base_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded_config(base_config()),
-            ResolutionTarget::Plan,
-            &["cargo".into(), "install".into(), "--path".into(), ".".into()],
-        )
-        .expect("resolution should succeed");
+        // Leading **/ is stripped before matching
+        assert!(exclude_pattern_matches("dir/file.pem", "**/*.pem"));
+        assert!(exclude_pattern_matches("a/b/c.key", "**/*.key"));
 
-        assert_eq!(plan.audit.package_manager.as_deref(), Some("cargo"));
-        assert!(plan.audit.lockfile.applicable);
-        assert_eq!(plan.audit.lockfile.expected_files, vec!["Cargo.lock".to_string()]);
+        // Path-relative pattern (contains slash): matches full relative path
+        assert!(exclude_pattern_matches("secrets/prod.json", "secrets/*"));
+        assert!(!exclude_pattern_matches("other/prod.json", "secrets/*"));
+        assert!(exclude_pattern_matches("config/.env.local", "config/.env.*"));
     }
 }

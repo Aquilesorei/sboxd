@@ -29,13 +29,11 @@ pub fn execute(cli: &Cli, command: &DoctorCommand) -> Result<ExitCode, crate::er
     if let Some(loaded) = loaded.as_ref() {
         checks.extend(risky_config_warnings(&loaded.config));
         checks.extend(workspace_state_warnings(loaded));
+        checks.extend(credential_exposure_warnings(loaded));
     }
     match backend {
         Backend::Podman => run_podman_checks(cli, loaded.as_ref(), &mut checks),
-        Backend::Docker => checks.push(CheckResult::warn(
-            "backend",
-            "docker doctor checks are not implemented yet".to_string(),
-        )),
+        Backend::Docker => run_docker_checks(loaded.as_ref(), &mut checks),
     }
 
     print_report(&checks);
@@ -97,7 +95,15 @@ fn resolve_backend(cli: &Cli, loaded: Option<&crate::config::LoadedConfig>) -> B
             .and_then(|runtime| runtime.backend.as_ref())
         {
             Some(crate::config::BackendKind::Docker) => Backend::Docker,
-            _ => Backend::Podman,
+            Some(crate::config::BackendKind::Podman) => Backend::Podman,
+            None => {
+                // Auto-detect: prefer podman, fall back to docker.
+                if crate::resolve::which_on_path("podman") {
+                    Backend::Podman
+                } else {
+                    Backend::Docker
+                }
+            }
         },
     }
 }
@@ -117,20 +123,42 @@ fn run_podman_checks(
         "podman is installed".to_string(),
     ));
 
-    match run_capture(Command::new("podman").args([
+    let podman_rootless = run_capture(Command::new("podman").args([
         "info",
         "--format",
         "{{.Host.Security.Rootless}}",
-    ])) {
-        Ok(output) if output.trim() == "true" => checks.push(CheckResult::pass(
-            "rootless",
-            "rootless mode is available".to_string(),
-        )),
-        Ok(output) => checks.push(CheckResult::fail(
-            "rootless",
-            format!("podman reported rootless={}", output.trim()),
-        )),
-        Err(detail) => checks.push(CheckResult::fail("rootless", detail)),
+    ]));
+
+    let configured_rootless = loaded
+        .and_then(|l| l.config.runtime.as_ref())
+        .and_then(|rt| rt.rootless);
+
+    match &podman_rootless {
+        Ok(output) if output.trim() == "true" => {
+            checks.push(CheckResult::pass(
+                "rootless",
+                "rootless mode is active".to_string(),
+            ));
+            if configured_rootless == Some(false) {
+                checks.push(CheckResult::warn(
+                    "rootless-config",
+                    "config sets `runtime.rootless: false` but Podman is running in rootless mode".to_string(),
+                ));
+            }
+        }
+        Ok(output) => {
+            checks.push(CheckResult::fail(
+                "rootless",
+                format!("podman reported rootless={}", output.trim()),
+            ));
+            if configured_rootless != Some(false) {
+                checks.push(CheckResult::warn(
+                    "rootless-config",
+                    "Podman is not running in rootless mode; set `runtime.rootless: false` in sbox.yaml to suppress --userns keep-id".to_string(),
+                ));
+            }
+        }
+        Err(detail) => checks.push(CheckResult::fail("rootless", detail.clone())),
     }
 
     if let Some(loaded) = loaded {
@@ -148,6 +176,43 @@ fn run_podman_checks(
             },
             Err(detail) => checks.push(CheckResult::warn("workspace-mount", detail)),
         }
+    }
+}
+
+fn run_docker_checks(
+    loaded: Option<&crate::config::LoadedConfig>,
+    checks: &mut Vec<CheckResult>,
+) {
+    match run_capture(Command::new("docker").arg("--version")) {
+        Err(detail) => {
+            checks.push(CheckResult::fail("backend", detail));
+            return;
+        }
+        Ok(version) => checks.push(CheckResult::pass(
+            "backend",
+            format!("docker is installed: {}", version.trim()),
+        )),
+    }
+
+    match run_capture(
+        Command::new("docker")
+            .args(["info", "--format", "{{.ServerVersion}}"]),
+    ) {
+        Ok(version) => checks.push(CheckResult::pass(
+            "daemon",
+            format!("docker daemon is running (server {})", version.trim()),
+        )),
+        Err(detail) => {
+            checks.push(CheckResult::fail(
+                "daemon",
+                format!("docker daemon is not reachable: {detail}"),
+            ));
+            return;
+        }
+    }
+
+    if let Some(loaded) = loaded {
+        checks.extend(risky_config_warnings(&loaded.config));
     }
 }
 
@@ -219,11 +284,6 @@ fn mount_check_request(
     let image = match &plan.image.source {
         ResolvedImageSource::Reference(reference) => reference.clone(),
         ResolvedImageSource::Build { tag, .. } => tag.clone(),
-        ResolvedImageSource::Preset(name) => {
-            return Err(format!(
-                "unsupported preset image source during doctor: preset:{name}"
-            ));
-        }
     };
 
     Ok(MountCheckRequest {
@@ -406,6 +466,108 @@ fn scan_workspace_artifacts(workspace_root: &Path) -> Vec<String> {
     findings
 }
 
+/// Credential file patterns that are worth warning about if found unmasked in the workspace.
+const CREDENTIAL_PATTERNS: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.development",
+    ".env.test",
+    ".env.staging",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    ".npmrc",
+    ".netrc",
+    ".pypirc",
+    "secrets.yaml",
+    "secrets.yml",
+    "secrets.json",
+    "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
+];
+
+fn credential_exposure_warnings(loaded: &crate::config::LoadedConfig) -> Vec<CheckResult> {
+    let exclude_paths = loaded
+        .config
+        .workspace
+        .as_ref()
+        .map(|ws| ws.exclude_paths.as_slice())
+        .unwrap_or(&[]);
+
+    let mut unmasked: Vec<String> = Vec::new();
+
+    for pattern in CREDENTIAL_PATTERNS {
+        let mut found = Vec::new();
+        collect_credential_files(&loaded.workspace_root, &loaded.workspace_root, pattern, &mut found);
+        for host_path in found {
+            if let Ok(rel) = host_path.strip_prefix(&loaded.workspace_root) {
+                let rel_str = rel.to_string_lossy();
+                let is_covered = exclude_paths
+                    .iter()
+                    .any(|ep| crate::resolve::exclude_pattern_matches(&rel_str, ep));
+                if !is_covered {
+                    unmasked.push(rel_str.to_string());
+                }
+            }
+        }
+    }
+
+    unmasked.sort();
+    unmasked.dedup();
+
+    if unmasked.is_empty() {
+        return vec![];
+    }
+
+    vec![CheckResult::warn(
+        "credential-exposure",
+        format!(
+            "credential files found in workspace not covered by exclude_paths: {}",
+            unmasked.join(", ")
+        ),
+    )]
+}
+
+/// Recursive file walk for credential pattern matching — mirrors the resolve.rs implementation
+/// but is standalone so doctor does not depend on resolve internals beyond the pub(crate) helpers.
+fn collect_credential_files(
+    workspace_root: &std::path::Path,
+    dir: &std::path::Path,
+    pattern: &str,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(name, ".git" | "node_modules" | "target" | ".venv") {
+                continue;
+            }
+            collect_credential_files(workspace_root, &path, pattern, out);
+        } else if file_type.is_file() {
+            if let Ok(rel) = path.strip_prefix(workspace_root) {
+                let rel_str = rel.to_string_lossy();
+                if crate::resolve::exclude_pattern_matches(&rel_str, pattern) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+}
+
 fn looks_like_sensitive_env(name: &str) -> bool {
     const EXACT: &[&str] = &[
         "SSH_AUTH_SOCK",
@@ -536,11 +698,11 @@ fn run_status(mut command: Command) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckLevel, CheckResult, determine_exit_code, risky_config_warnings,
-        scan_workspace_artifacts, workspace_state_warnings,
+        CheckLevel, CheckResult, credential_exposure_warnings, determine_exit_code,
+        risky_config_warnings, scan_workspace_artifacts, workspace_state_warnings,
     };
     use crate::config::LoadedConfig;
-    use crate::config::model::{Config, EnvironmentConfig, MountConfig, MountType};
+    use crate::config::model::{Config, EnvironmentConfig, MountConfig, MountType, WorkspaceConfig};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::process::ExitCode;
@@ -637,9 +799,11 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-                script_policy: None,
+            role: None,
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: Vec::new(),
                 ports: Vec::new(),
-                audit_hooks: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
@@ -748,5 +912,87 @@ mod tests {
             "not currently usable: skopeo is not installed".into(),
         )];
         assert_eq!(determine_exit_code(&checks, false), ExitCode::SUCCESS);
+    }
+
+    fn make_loaded_with_workspace(root: PathBuf, exclude_paths: Vec<String>) -> LoadedConfig {
+        LoadedConfig {
+            invocation_dir: root.clone(),
+            workspace_root: root.clone(),
+            config_path: root.join("sbox.yaml"),
+            config: Config {
+                version: 1,
+                runtime: None,
+                workspace: Some(WorkspaceConfig {
+                    root: Some(root.clone()),
+                    mount: Some("/workspace".to_string()),
+                    writable: Some(true),
+                    writable_paths: Vec::new(),
+                    exclude_paths,
+                }),
+                identity: None,
+                image: None,
+                environment: None,
+                mounts: Vec::new(),
+                caches: Vec::new(),
+                secrets: Vec::new(),
+                profiles: Default::default(),
+                dispatch: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn doctor_warns_when_env_file_not_covered_by_exclude_paths() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), "SECRET=hunter2").unwrap();
+
+        let loaded = make_loaded_with_workspace(root.path().to_path_buf(), vec![]);
+        let warnings = credential_exposure_warnings(&loaded);
+
+        assert!(
+            warnings.iter().any(|w| w.name == "credential-exposure"),
+            "expected credential-exposure warning"
+        );
+        assert!(warnings[0].detail.contains(".env"));
+    }
+
+    #[test]
+    fn doctor_no_warning_when_env_file_covered_by_exclude_paths() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), "SECRET=hunter2").unwrap();
+
+        let loaded = make_loaded_with_workspace(
+            root.path().to_path_buf(),
+            vec![".env".to_string()],
+        );
+        let warnings = credential_exposure_warnings(&loaded);
+
+        assert!(
+            warnings.iter().all(|w| w.name != "credential-exposure"),
+            "no warning when .env is covered"
+        );
+    }
+
+    #[test]
+    fn doctor_warns_for_pem_file_not_covered() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("server.pem"), "CERT").unwrap();
+
+        let loaded = make_loaded_with_workspace(root.path().to_path_buf(), vec![]);
+        let warnings = credential_exposure_warnings(&loaded);
+
+        assert!(warnings.iter().any(|w| w.name == "credential-exposure"));
+        assert!(warnings[0].detail.contains("server.pem"));
+    }
+
+    #[test]
+    fn doctor_no_warning_when_workspace_has_no_credential_files() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("main.rs"), "fn main() {}").unwrap();
+
+        let loaded = make_loaded_with_workspace(root.path().to_path_buf(), vec![]);
+        let warnings = credential_exposure_warnings(&loaded);
+
+        assert!(warnings.iter().all(|w| w.name != "credential-exposure"));
     }
 }

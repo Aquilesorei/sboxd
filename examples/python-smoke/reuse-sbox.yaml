@@ -8,7 +8,17 @@ runtime:
 workspace:
   root: ../..
   mount: /workspace
-  writable: true
+  writable: false
+  writable_paths: []
+  exclude_paths:
+    - .env
+    - .env.local
+    - .env.production
+    - .env.development
+    - "*.pem"
+    - "*.key"
+    - .pypirc
+    - .netrc
 
 image:
   ref: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
@@ -39,7 +49,10 @@ profiles:
     mode: sandbox
     network: on
     writable: true
+    role: install
     require_pinned_image: true
+    lockfile_files:
+      - uv.lock
     ports: []
     no_new_privileges: true
 

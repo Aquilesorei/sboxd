@@ -35,10 +35,9 @@ pub fn execute(cli: &Cli, command: &ShellCommand) -> Result<ExitCode, SboxError>
             crate::config::BackendKind::Podman => {
                 crate::backend::podman::execute_interactive(&plan)
             }
-            crate::config::BackendKind::Docker => Err(SboxError::SandboxExecutionNotImplemented {
-                profile: plan.profile_name.clone(),
-                backend: "docker".to_string(),
-            }),
+            crate::config::BackendKind::Docker => {
+                crate::backend::docker::execute_interactive(&plan)
+            }
         },
     }
 }
@@ -130,9 +129,11 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-                script_policy: None,
+            role: None,
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: Vec::new(),
                 ports: Vec::new(),
-                audit_hooks: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,

@@ -8,7 +8,18 @@ runtime:
 workspace:
   root: ../..
   mount: /workspace
-  writable: true
+  writable: false
+  writable_paths:
+    - node_modules
+  exclude_paths:
+    - .env
+    - .env.local
+    - .env.production
+    - .env.development
+    - "*.pem"
+    - "*.key"
+    - .npmrc
+    - .netrc
 
 image:
   ref: node:22-bookworm-slim
@@ -35,7 +46,16 @@ profiles:
     mode: sandbox
     network: on
     writable: true
+    role: install
     require_pinned_image: true
+    lockfile_files:
+      - package-lock.json
+      - npm-shrinkwrap.json
+    pre_run:
+      - npm audit --audit-level=high
+    network_allow:
+      - registry.npmjs.org
+      - registry.yarnpkg.com
     ports: []
     no_new_privileges: true
 

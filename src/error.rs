@@ -37,9 +37,9 @@ pub enum SboxError {
     #[error("refusing unsafe sandbox execution for `{command}`: {reason}")]
     UnsafeExecutionPolicy { command: String, reason: String },
 
-    #[error("configured audit hook `{hook}` failed before `{command}` with exit status `{status}`")]
-    AuditHookFailed {
-        hook: String,
+    #[error("pre-run command `{pre_run}` failed before `{command}` with exit status `{status}`")]
+    PreRunFailed {
+        pre_run: String,
         command: String,
         status: u8,
     },
@@ -97,12 +97,6 @@ pub enum SboxError {
         "sandbox execution is not implemented yet for profile `{profile}` with backend `{backend}`"
     )]
     SandboxExecutionNotImplemented { profile: String, backend: String },
-
-    #[error("sandbox image source `{image_source}` is not implemented for backend `{backend}`")]
-    UnsupportedImageSource {
-        backend: String,
-        image_source: String,
-    },
 
     #[error("unsupported mount type `{mount_type}`")]
     UnsupportedMountType { mount_type: String },

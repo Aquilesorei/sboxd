@@ -2,12 +2,23 @@
 name = "sbox"
 version = "0.1.0"
 edition = "2024"
+description = "Policy-driven command runner for sandboxed dependency installation"
+repository = "https://github.com/Aquilesorei/sbox"
+homepage = "https://github.com/Aquilesorei/sbox"
+license = "MIT"
+authors = ["Aquilesorei"]
+keywords = ["sandbox", "podman", "security", "supply-chain", "package-manager"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
 indexmap = { version = "2.12.0", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 serde_yaml = "0.9.34"
 thiserror = "2.0.12"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+
+[dev-dependencies]
+tempfile = "3.15"

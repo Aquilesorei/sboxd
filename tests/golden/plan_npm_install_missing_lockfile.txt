@@ -8,14 +8,12 @@ argv:
   - install
 
 audit:
-  install_style: true
+  install_style: false
   strict_security: false
   trusted_image_required: false
   sensitive_pass_through: <none>
-  package_manager: npm
-  lockfile: required, missing (package-lock.json or npm-shrinkwrap.json)
-  script_hooks: policy=allow, allowed
-  audit_hooks: <none>
+  lockfile: not-applicable
+  pre_run: <none>
 
 resolution:
   profile: default
@@ -40,6 +38,7 @@ workspace:
 
 policy:
   network: off
+  network_allow: <none>
   writable: true
   no_new_privileges: true
   read_only_rootfs: false
@@ -48,6 +47,7 @@ policy:
   cap_drop: <none>
   cap_add: <none>
   ports: <none>
+  pull_policy: <default>
 
 environment:
   - APP_MODE=sandbox-test (set)
@@ -56,7 +56,7 @@ environment:
   denied: SECRET_TOKEN
 
 mounts:
-  - bind $ROOT -> /workspace (rw, workspace)
+  - bind $ROOT -> /workspace (ro, workspace)
 
 caches:
   - uv-cache -> /var/tmp/sbox/uv-cache (rw, source: <default>)

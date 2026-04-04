@@ -30,7 +30,16 @@ fn run_sbox(current_dir: &Path, args: &[&str]) -> String {
 
 fn normalize_output(output: &str) -> String {
     let root = repo_root();
-    output.replace(root.to_string_lossy().as_ref(), "$ROOT")
+    let output = output.replace(root.to_string_lossy().as_ref(), "$ROOT");
+    // Replace resolved IP addresses in network_allow lines with a stable placeholder,
+    // since DNS resolution is non-deterministic across environments.
+    let mut result = Vec::new();
+    for line in output.lines() {
+        // network_allow lines already use stable `[resolved] host1, host2` or `[patterns] *.x`
+        // format without raw IPs — no normalization needed.
+        result.push(line.to_string());
+    }
+    result.join("\n") + if output.ends_with('\n') { "\n" } else { "" }
 }
 
 fn assert_matches_fixture(actual: &str, fixture_name: &str) {

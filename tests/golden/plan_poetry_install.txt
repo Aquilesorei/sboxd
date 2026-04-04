@@ -12,10 +12,8 @@ audit:
   strict_security: false
   trusted_image_required: false
   sensitive_pass_through: <none>
-  package_manager: poetry
   lockfile: required, present (poetry.lock)
-  script_hooks: policy=allow, not-applicable
-  audit_hooks: <none>
+  pre_run: <none>
 
 resolution:
   profile: install
@@ -40,6 +38,7 @@ workspace:
 
 policy:
   network: on
+  network_allow: <none>
   writable: true
   no_new_privileges: true
   read_only_rootfs: false
@@ -48,6 +47,7 @@ policy:
   cap_drop: <none>
   cap_add: <none>
   ports: <none>
+  pull_policy: <default>
 
 environment:
   - POETRY_CACHE_DIR=/var/tmp/sbox/poetry-cache (set)
@@ -55,7 +55,7 @@ environment:
   denied: PYPI_TOKEN
 
 mounts:
-  - bind $ROOT -> /workspace (rw, workspace)
+  - bind $ROOT -> /workspace (ro, workspace)
 
 caches:
   - poetry-cache -> /var/tmp/sbox/poetry-cache (rw, source: <default>)

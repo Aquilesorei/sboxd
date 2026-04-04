@@ -30,7 +30,7 @@ fn execute(
     })?;
     let plan = resolve_execution_plan(cli, &loaded, target, command)?;
     validate_execution_safety(&plan, strict_security_enabled(cli, &loaded.config))?;
-    run_audit_hooks(&plan)?;
+    run_pre_run_commands(&plan)?;
 
     execute_plan(&plan)
 }
@@ -73,25 +73,16 @@ pub(crate) fn execute_host(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> 
 
 pub(crate) fn status_to_exit_code(status: std::process::ExitStatus) -> ExitCode {
     match status.code() {
-        Some(code) => ExitCode::from(code as u8),
+        Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         None => ExitCode::from(1),
     }
 }
 
-fn describe_backend(backend: &crate::config::BackendKind) -> &'static str {
-    match backend {
-        crate::config::BackendKind::Podman => "podman",
-        crate::config::BackendKind::Docker => "docker",
-    }
-}
 
 pub(crate) fn execute_sandbox(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
     match plan.backend {
         crate::config::BackendKind::Podman => crate::backend::podman::execute(plan),
-        crate::config::BackendKind::Docker => Err(SboxError::SandboxExecutionNotImplemented {
-            profile: plan.profile_name.clone(),
-            backend: describe_backend(&plan.backend).to_string(),
-        }),
+        crate::config::BackendKind::Docker => crate::backend::docker::execute(plan),
     }
 }
 
@@ -122,25 +113,6 @@ pub(crate) fn validate_execution_safety(
         });
     }
 
-    if plan.audit.script_hooks.applicable {
-        match plan.audit.script_hooks.policy {
-            crate::resolve::ScriptPolicyState::Allow => {}
-            crate::resolve::ScriptPolicyState::Ignore if !plan.audit.script_hooks.blocked => {
-                return Err(SboxError::UnsafeExecutionPolicy {
-                    command: plan.command_string.clone(),
-                    reason: "profile script policy requires install scripts to be disabled (for example with --ignore-scripts)".to_string(),
-                });
-            }
-            crate::resolve::ScriptPolicyState::Block => {
-                return Err(SboxError::UnsafeExecutionPolicy {
-                    command: plan.command_string.clone(),
-                    reason: "profile script policy blocks package-manager lifecycle scripts for this command".to_string(),
-                });
-            }
-            crate::resolve::ScriptPolicyState::Ignore => {}
-        }
-    }
-
     if strict_security
         && plan.audit.install_style
         && plan.audit.lockfile.applicable
@@ -150,8 +122,7 @@ pub(crate) fn validate_execution_safety(
         return Err(SboxError::UnsafeExecutionPolicy {
             command: plan.command_string.clone(),
             reason: format!(
-                "strict security requires a lockfile for {} installs: expected {}",
-                plan.audit.package_manager.as_deref().unwrap_or("package-manager"),
+                "strict security requires a lockfile for install-style commands: expected {}",
                 plan.audit.lockfile.expected_files.join(" or ")
             ),
         });
@@ -174,20 +145,29 @@ pub(crate) fn validate_execution_safety(
     })
 }
 
-fn run_audit_hooks(plan: &ExecutionPlan) -> Result<(), SboxError> {
-    for hook in &plan.audit.audit_hooks.runnable {
-        let hook_plan = ExecutionPlan {
-            command: hook.command.clone(),
-            command_string: hook.command.join(" "),
-            ..plan.clone()
-        };
+fn run_pre_run_commands(plan: &ExecutionPlan) -> Result<(), SboxError> {
+    for argv in &plan.audit.pre_run {
+        let (program, args) = argv
+            .split_first()
+            .expect("pre_run commands are non-empty after parse");
 
-        let status = execute_plan(&hook_plan)?;
-        if status != ExitCode::SUCCESS {
-            return Err(SboxError::AuditHookFailed {
-                hook: hook.name.clone(),
+        let status = Command::new(program)
+            .args(args)
+            .current_dir(&plan.workspace.effective_host_dir)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|source| SboxError::CommandSpawn {
+                program: program.clone(),
+                source,
+            })?;
+
+        if !status.success() {
+            return Err(SboxError::PreRunFailed {
+                pre_run: argv.join(" "),
                 command: plan.command_string.clone(),
-                status: 1,
+                status: status.code().unwrap_or(1) as u8,
             });
         }
     }
@@ -214,9 +194,9 @@ mod tests {
     use super::{strict_security_enabled, trusted_image_required, validate_execution_safety};
     use crate::config::model::ExecutionMode;
     use crate::resolve::{
-        CwdMapping, EnvVarSource, ExecutionPlan, ModeSource, ProfileSource, ResolvedEnvVar,
-        ResolvedEnvironment, ResolvedImage, ResolvedImageSource, ResolvedPolicy, ResolvedUser,
-        ResolvedWorkspace,
+        CwdMapping, EnvVarSource, ExecutionAudit, ExecutionPlan, LockfileAudit, ModeSource,
+        ProfileSource, ResolvedEnvVar, ResolvedEnvironment, ResolvedImage, ResolvedImageSource,
+        ResolvedPolicy, ResolvedUser, ResolvedWorkspace,
     };
     use std::path::PathBuf;
 
@@ -253,6 +233,9 @@ mod tests {
                 reusable_session_name: None,
                 cap_drop: Vec::new(),
                 cap_add: Vec::new(),
+                pull_policy: None,
+                network_allow: Vec::new(),
+                network_allow_patterns: Vec::new(),
             },
             environment: ResolvedEnvironment {
                 variables: vec![ResolvedEnvVar {
@@ -266,26 +249,17 @@ mod tests {
             caches: Vec::new(),
             secrets: Vec::new(),
             user: ResolvedUser::KeepId,
-            audit: crate::resolve::ExecutionAudit {
+            audit: ExecutionAudit {
                 install_style: true,
                 trusted_image_required: false,
                 sensitive_pass_through_vars: vec!["NPM_TOKEN".into()],
-                package_manager: Some("npm".into()),
-                lockfile: crate::resolve::LockfileAudit {
+                lockfile: LockfileAudit {
                     applicable: true,
                     required: true,
                     present: true,
                     expected_files: vec!["package-lock.json".into()],
                 },
-                script_hooks: crate::resolve::ScriptHookAudit {
-                    applicable: true,
-                    blocked: false,
-                    policy: crate::resolve::ScriptPolicyState::Allow,
-                },
-                audit_hooks: crate::resolve::AuditHookAudit {
-                    configured: Vec::new(),
-                    runnable: Vec::new(),
-                },
+                pre_run: Vec::new(),
             },
         }
     }
@@ -358,34 +332,7 @@ mod tests {
         plan.audit.lockfile.present = false;
 
         let error = validate_execution_safety(&plan, true).expect_err("missing lockfile should reject");
-        assert!(error.to_string().contains("requires a lockfile"));
-    }
-
-    #[test]
-    fn script_policy_ignore_requires_scripts_to_be_blocked() {
-        let mut plan = sample_plan();
-        plan.audit.sensitive_pass_through_vars.clear();
-        plan.audit.script_hooks.policy = crate::resolve::ScriptPolicyState::Ignore;
-
-        let error =
-            validate_execution_safety(&plan, false).expect_err("script policy should reject");
-        assert!(error
-            .to_string()
-            .contains("requires install scripts to be disabled"));
-    }
-
-    #[test]
-    fn script_policy_block_rejects_script_capable_commands() {
-        let mut plan = sample_plan();
-        plan.audit.sensitive_pass_through_vars.clear();
-        plan.audit.script_hooks.policy = crate::resolve::ScriptPolicyState::Block;
-        plan.audit.script_hooks.blocked = true;
-
-        let error =
-            validate_execution_safety(&plan, false).expect_err("block policy should reject");
-        assert!(error
-            .to_string()
-            .contains("blocks package-manager lifecycle scripts"));
+        assert!(error.to_string().contains("requires a lockfile for install-style"));
     }
 
     #[test]

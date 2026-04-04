@@ -13,10 +13,8 @@ audit:
   strict_security: false
   trusted_image_required: false
   sensitive_pass_through: <none>
-  package_manager: bun
   lockfile: required, present (bun.lock or bun.lockb)
-  script_hooks: policy=ignore, blocked
-  audit_hooks: configured (bun-audit), runnable (bun-audit)
+  pre_run: bun audit
 
 resolution:
   profile: install
@@ -41,6 +39,7 @@ workspace:
 
 policy:
   network: on
+  network_allow: <none>
   writable: true
   no_new_privileges: true
   read_only_rootfs: false
@@ -49,13 +48,15 @@ policy:
   cap_drop: <none>
   cap_add: <none>
   ports: <none>
+  pull_policy: <default>
 
 environment:
   - BUN_INSTALL_CACHE_DIR=/var/tmp/sbox/bun-cache (set)
   denied: NPM_TOKEN, NODE_AUTH_TOKEN
 
 mounts:
-  - bind $ROOT -> /workspace (rw, workspace)
+  - bind $ROOT -> /workspace (ro, workspace)
+  - bind $ROOT/node_modules -> /workspace/node_modules (rw, workspace)
 
 caches:
   - bun-cache -> /var/tmp/sbox/bun-cache (rw, source: <default>)

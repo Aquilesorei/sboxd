@@ -49,6 +49,7 @@ pub enum Commands {
     Plan(PlanCommand),
     Doctor(DoctorCommand),
     Clean(CleanCommand),
+    Shim(ShimCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -88,7 +89,11 @@ pub struct ShellCommand {
 #[derive(Debug, Clone, Args)]
 #[command(trailing_var_arg = true)]
 pub struct PlanCommand {
-    #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+    #[arg(long)]
+    pub show_command: bool,
+
+    /// Omit to show the policy for the profile selected by --profile without a specific command.
+    #[arg(num_args = 0.., allow_hyphen_values = true)]
     pub command: Vec<String>,
 }
 
@@ -126,4 +131,19 @@ pub enum CliBackendKind {
 pub enum CliExecutionMode {
     Host,
     Sandbox,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ShimCommand {
+    /// Directory to write shim scripts into (default: ~/.local/bin)
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+
+    /// Overwrite existing shim files
+    #[arg(long)]
+    pub force: bool,
+
+    /// Print what would be created without writing anything
+    #[arg(long)]
+    pub dry_run: bool,
 }

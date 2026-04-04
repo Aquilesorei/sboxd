@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -64,6 +62,7 @@ pub struct RuntimeConfig {
     pub reuse_container: Option<bool>,
     pub container_name: Option<String>,
     pub pull_policy: Option<PullPolicy>,
+    pub require_pinned_image: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -71,6 +70,12 @@ pub struct WorkspaceConfig {
     pub root: Option<PathBuf>,
     pub mount: Option<String>,
     pub writable: Option<bool>,
+    #[serde(default)]
+    pub writable_paths: Vec<String>,
+    /// Files/patterns to mask inside the container with /dev/null, preventing credential theft.
+    /// Supports glob wildcards: `*.pem`, `.env.*`, `**/*.key`. Matched relative to workspace root.
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,32 +151,34 @@ pub enum ExecutionMode {
     Sandbox,
 }
 
+/// Role of a profile — determines install-style semantics for policy enforcement.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum ScriptPolicy {
-    Allow,
-    Ignore,
-    Block,
+pub enum ProfileRole {
+    Install,
+    Run,
+    Build,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum AuditHook {
-    NpmAudit,
-    PnpmAudit,
-    YarnAudit,
-    PipAudit,
-    CargoAudit,
-    BunAudit,
-    ComposerAudit,
-    GoAudit,
+/// Structured form: `capabilities: { drop: [all], add: [NET_BIND_SERVICE] }`
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CapabilitiesConfig {
+    #[serde(default)]
+    pub drop: Vec<String>,
+    #[serde(default)]
+    pub add: Vec<String>,
 }
 
+/// Accepts three forms for backward compatibility:
+/// - `capabilities: "drop-all"` — keyword string (only "drop-all" is valid)
+/// - `capabilities: ["CAP_NET_ADMIN"]` — list treated as cap_add
+/// - `capabilities: { drop: [all], add: [NET_BIND_SERVICE] }` — structured (preferred)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum CapabilitiesSpec {
-    Keyword(String),
+    Structured(CapabilitiesConfig),
     List(Vec<String>),
+    Keyword(String),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,13 +190,30 @@ pub struct ProfileConfig {
     pub writable: Option<bool>,
     pub require_pinned_image: Option<bool>,
     pub require_lockfile: Option<bool>,
-    pub script_policy: Option<ScriptPolicy>,
+
+    /// Declares what role this profile plays (install, run, build).
+    /// `install` enables lockfile auditing and install-style policy enforcement.
+    pub role: Option<ProfileRole>,
+
+    /// Lockfile filenames to check when this profile runs an install-style command.
+    /// Replaces built-in per-PM lockfile detection.
+    #[serde(default)]
+    pub lockfile_files: Vec<String>,
+
+    /// Commands to run on the host before the sandboxed command. Each entry is a
+    /// shell-quoted command string, e.g. `["npm audit --audit-level=high"]`.
+    #[serde(default)]
+    pub pre_run: Vec<String>,
 
     #[serde(default)]
     pub ports: Vec<String>,
 
+    /// When non-empty and `network` is `on`, restrict outbound DNS to only these hostnames.
+    /// Implemented by resolving each domain on the host at container-start time and injecting
+    /// `--add-host` entries, then pointing the container's DNS at a non-existent server so
+    /// arbitrary lookups fail. Raw-IP connections bypass this; package managers use domain names.
     #[serde(default)]
-    pub audit_hooks: Vec<AuditHook>,
+    pub network_allow: Vec<String>,
 
     pub capabilities: Option<CapabilitiesSpec>,
     pub no_new_privileges: Option<bool>,

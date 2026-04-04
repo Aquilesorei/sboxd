@@ -2,7 +2,6 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::SboxError;
 use crate::resolve::{
@@ -115,10 +114,6 @@ fn resolve_container_image(plan: &ExecutionPlan) -> Result<String, SboxError> {
             ensure_built_image(recipe_path, tag, &plan.workspace.root)?;
             Ok(tag.clone())
         }
-        ResolvedImageSource::Preset(name) => Err(SboxError::UnsupportedImageSource {
-            backend: "podman".to_string(),
-            image_source: format!("preset:{name}"),
-        }),
     }
 }
 
@@ -133,12 +128,6 @@ fn verify_image_signature(plan: &ExecutionPlan) -> Result<(), SboxError> {
             return Err(SboxError::SignatureVerificationUnavailable {
                 image: tag.clone(),
                 reason: "signature verification is not implemented for local build images".into(),
-            });
-        }
-        ResolvedImageSource::Preset(name) => {
-            return Err(SboxError::SignatureVerificationUnavailable {
-                image: format!("preset:{name}"),
-                reason: "signature verification requires a resolved image reference".into(),
             });
         }
     };
@@ -157,42 +146,22 @@ fn verify_image_signature(plan: &ExecutionPlan) -> Result<(), SboxError> {
 }
 
 fn run_signature_verification(reference: &str, policy: &Path) -> Result<(), SboxError> {
-    let temp_dir = verification_temp_dir();
-    fs::create_dir_all(&temp_dir).map_err(|source| SboxError::BackendUnavailable {
-        backend: "skopeo".to_string(),
-        source,
-    })?;
-
     let status = Command::new("skopeo")
         .args([
             "--policy",
             &policy.display().to_string(),
-            "copy",
-            "--quiet",
-            "--preserve-digests",
+            "inspect",
+            "--raw",
             &format!("docker://{reference}"),
-            &format!("dir:{}", temp_dir.display()),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .status()
         .map_err(|source| SboxError::BackendUnavailable {
             backend: "skopeo".to_string(),
             source,
-        });
-
-    let cleanup_result = fs::remove_dir_all(&temp_dir);
-
-    let status = status?;
-    if let Err(source) = cleanup_result
-        && source.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            "failed to clean signature verification temp dir {}: {source}",
-            temp_dir.display()
-        );
-    }
+        })?;
 
     if status.success() {
         Ok(())
@@ -308,14 +277,6 @@ fn requirements_enable_signature_verification(value: &serde_json::Value) -> bool
     })
 }
 
-fn verification_temp_dir() -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("sbox-signature-verify-{unique}-{}", std::process::id()))
-}
-
 pub fn build_run_args(plan: &ExecutionPlan, image: &str) -> Result<Vec<String>, SboxError> {
     build_run_args_with_options(plan, image, false)
 }
@@ -423,6 +384,11 @@ pub fn build_run_args_with_options(
         args.push(format!("{}={}", variable.name, variable.value));
     }
 
+    if let Some(pull_policy) = &plan.policy.pull_policy {
+        args.push("--pull".to_string());
+        args.push(pull_policy.clone());
+    }
+
     args.push(image.to_string());
     args.extend(plan.command.iter().cloned());
 
@@ -453,6 +419,16 @@ fn append_mount_args(args: &mut Vec<String>, mount: &ResolvedMount) -> Result<()
                 mount.target.clone()
             };
             args.push(spec);
+            Ok(())
+        }
+        "mask" => {
+            // Overlay the file with /dev/null so the container sees an empty file.
+            // The host file is untouched; malicious hooks cannot read its contents.
+            args.push("--mount".to_string());
+            args.push(format!(
+                "type=bind,src=/dev/null,target={},relabel=private,readonly=true",
+                mount.target
+            ));
             Ok(())
         }
         other => Err(SboxError::UnsupportedMountType {
@@ -601,6 +577,17 @@ fn append_container_settings(
         }
     }
 
+    // Domain allow-listing: break default DNS, inject resolved IPs as /etc/hosts entries.
+    // RFC 5737 192.0.2.1 is TEST-NET-1, guaranteed non-routable — DNS queries will time out.
+    if !plan.policy.network_allow.is_empty() {
+        args.push("--dns".to_string());
+        args.push("192.0.2.1".to_string());
+        for (hostname, ip) in &plan.policy.network_allow {
+            args.push("--add-host".to_string());
+            args.push(format!("{hostname}:{ip}"));
+        }
+    }
+
     for port in &plan.policy.ports {
         args.push("--publish".to_string());
         args.push(port.clone());
@@ -712,6 +699,7 @@ fn validate_runtime_inputs(plan: &ExecutionPlan) -> Result<(), SboxError> {
 
 fn validate_mount_source(mount: &ResolvedMount) -> Result<(), SboxError> {
     if mount.kind != "bind" {
+        // "tmpfs" and "mask" mounts have no host source to validate
         return Ok(());
     }
 
@@ -719,15 +707,24 @@ fn validate_mount_source(mount: &ResolvedMount) -> Result<(), SboxError> {
         .source
         .as_ref()
         .expect("bind mounts always resolve source");
+
     if source.exists() {
-        Ok(())
-    } else {
-        Err(SboxError::HostPathNotFound {
+        return Ok(());
+    }
+
+    if mount.create {
+        return fs::create_dir_all(source).map_err(|_| SboxError::HostPathNotFound {
             kind: "mount source",
             name: mount.target.clone(),
             path: source.clone(),
-        })
+        });
     }
+
+    Err(SboxError::HostPathNotFound {
+        kind: "mount source",
+        name: mount.target.clone(),
+        path: source.clone(),
+    })
 }
 
 fn append_secret_args(
@@ -891,7 +888,7 @@ fn ensure_built_image(
 
 fn status_to_exit_code(status: std::process::ExitStatus) -> ExitCode {
     match status.code() {
-        Some(code) => ExitCode::from(code as u8),
+        Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         None => ExitCode::from(1),
     }
 }
@@ -962,6 +959,9 @@ mod tests {
                 reusable_session_name: None,
                 cap_drop: vec!["all".into()],
                 cap_add: Vec::new(),
+                pull_policy: None,
+                network_allow: Vec::new(),
+                network_allow_patterns: Vec::new(),
             },
             environment: ResolvedEnvironment {
                 variables: vec![ResolvedEnvVar {
@@ -977,6 +977,7 @@ mod tests {
                 target: "/workspace".into(),
                 read_only: false,
                 is_workspace: true,
+                create: false,
             }],
             caches: vec![ResolvedCache {
                 name: "uv-cache".into(),
@@ -994,22 +995,13 @@ mod tests {
                 install_style: false,
                 trusted_image_required: false,
                 sensitive_pass_through_vars: Vec::new(),
-                package_manager: None,
                 lockfile: crate::resolve::LockfileAudit {
                     applicable: false,
                     required: false,
                     present: false,
                     expected_files: Vec::new(),
                 },
-                script_hooks: crate::resolve::ScriptHookAudit {
-                    applicable: false,
-                    blocked: false,
-                    policy: crate::resolve::ScriptPolicyState::Allow,
-                },
-                audit_hooks: crate::resolve::AuditHookAudit {
-                    configured: Vec::new(),
-                    runnable: Vec::new(),
-                },
+                pre_run: Vec::new(),
             },
         }
     }

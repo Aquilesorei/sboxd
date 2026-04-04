@@ -41,11 +41,11 @@ fn resolve_output_path(cli: &Cli, command: &InitCommand) -> Result<PathBuf, Sbox
 }
 
 pub fn render_template(preset: &str) -> Result<String, SboxError> {
-    let image = match preset {
-        "generic" | "polyglot" => "ubuntu:24.04",
-        "python" => "python:3.13-slim",
-        "rust" => "rust:1-bookworm",
-        "node" => "node:22-bookworm-slim",
+    let (image, writable_paths) = match preset {
+        "generic" | "polyglot" => ("ubuntu:24.04", "[]"),
+        "python" => ("python:3.13-slim", "[\".venv\"]"),
+        "rust" => ("rust:1-bookworm", "[\"target\"]"),
+        "node" => ("node:22-bookworm-slim", "[\"node_modules\"]"),
         other => {
             return Err(SboxError::UnknownPreset {
                 name: other.to_string(),
@@ -53,8 +53,12 @@ pub fn render_template(preset: &str) -> Result<String, SboxError> {
         }
     };
 
+    // Language-specific presets protect source code from modification by making the workspace
+    // read-only at the config level, then punching writable holes for package output directories.
+    let workspace_writable = matches!(preset, "generic" | "polyglot");
+
     Ok(format!(
-        "version: 1\n\nruntime:\n  backend: podman\n  rootless: true\n  reuse_container: false\n\nworkspace:\n  root: .\n  mount: /workspace\n  writable: true\n\nimage:\n  ref: {image}\n\nenvironment:\n  pass_through:\n    - TERM\n  set: {{}}\n  deny: []\n\nmounts: []\ncaches: []\nsecrets: []\n\nprofiles:\n  default:\n    mode: sandbox\n    network: off\n    writable: true\n    ports: []\n    no_new_privileges: true\n\n  host:\n    mode: host\n    network: on\n    writable: true\n    ports: []\n\ndispatch: {{}}\n"
+        "version: 1\n\nruntime:\n  backend: podman\n  rootless: true\n  reuse_container: false\n\nworkspace:\n  root: .\n  mount: /workspace\n  writable: {workspace_writable}\n  writable_paths: {writable_paths}\n  exclude_paths:\n    - .env\n    - .env.local\n    - .env.production\n    - .env.development\n    - \"*.pem\"\n    - \"*.key\"\n    - \"*.p12\"\n    - .npmrc\n    - .netrc\n\nimage:\n  ref: {image}\n\nenvironment:\n  pass_through:\n    - TERM\n  set: {{}}\n  deny: []\n\nmounts: []\ncaches: []\nsecrets: []\n\nprofiles:\n  default:\n    mode: sandbox\n    network: off\n    writable: true\n    ports: []\n    no_new_privileges: true\n\n  host:\n    mode: host\n    network: on\n    writable: true\n    ports: []\n\ndispatch: {{}}\n"
     ))
 }
 

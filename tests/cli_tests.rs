@@ -38,7 +38,7 @@ fn parse_plan_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Plan(PlanCommand { command }) => {
+        Commands::Plan(PlanCommand { command, .. }) => {
             assert_eq!(command, vec!["cargo", "build"]);
         }
         other => panic!("expected plan command, got {other:?}"),

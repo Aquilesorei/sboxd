@@ -5,8 +5,8 @@ use crate::cli::{Cli, PlanCommand};
 use crate::config::{LoadOptions, load_config};
 use crate::error::SboxError;
 use crate::resolve::{
-    CwdMapping, EnvVarSource, ExecutionPlan, ModeSource, ProfileSource, ResolutionTarget,
-    resolve_execution_plan,
+    CwdMapping, EnvVarSource, ExecutionPlan, ModeSource, ProfileSource, ResolvedImageSource,
+    ResolutionTarget, resolve_execution_plan,
 };
 
 pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> {
@@ -14,12 +14,34 @@ pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> 
         workspace: cli.workspace.clone(),
         config: cli.config.clone(),
     })?;
-    let plan = resolve_execution_plan(cli, &loaded, ResolutionTarget::Plan, &command.command)?;
+
+    let (target, effective_command): (ResolutionTarget<'_>, Vec<String>) =
+        if command.command.is_empty() {
+            let profile = cli.profile.as_deref().ok_or_else(|| {
+                SboxError::ProfileResolutionFailed {
+                    command: "<none>".to_string(),
+                }
+            })?;
+            (
+                ResolutionTarget::Exec { profile },
+                vec!["<profile-inspection>".to_string()],
+            )
+        } else {
+            (ResolutionTarget::Plan, command.command.clone())
+        };
+
+    let plan = resolve_execution_plan(cli, &loaded, target, &effective_command)?;
     let strict_security = crate::exec::strict_security_enabled(cli, &loaded.config);
 
     print!(
         "{}",
-        render_plan(&loaded.config_path, &plan, strict_security)
+        render_plan(
+            &loaded.config_path,
+            &plan,
+            strict_security,
+            command.show_command,
+            command.command.is_empty(),
+        )
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -28,6 +50,8 @@ fn render_plan(
     config_path: &std::path::Path,
     plan: &ExecutionPlan,
     strict_security: bool,
+    show_command: bool,
+    profile_inspection: bool,
 ) -> String {
     let mut output = String::new();
     writeln!(output, "sbox plan").ok();
@@ -35,13 +59,21 @@ fn render_plan(
     writeln!(output, "config: {}", config_path.display()).ok();
     writeln!(output).ok();
 
-    writeln!(output, "command: {}", plan.command_string).ok();
-    writeln!(output, "argv:").ok();
-    for arg in &plan.command {
-        writeln!(output, "  - {arg}").ok();
+    if profile_inspection {
+        writeln!(output, "command: <profile inspection — no command given>").ok();
+    } else {
+        writeln!(output, "command: {}", plan.command_string).ok();
+        writeln!(output, "argv:").ok();
+        for arg in &plan.command {
+            writeln!(output, "  - {arg}").ok();
+        }
     }
     writeln!(output).ok();
 
+    if profile_inspection {
+        writeln!(output, "audit: <not applicable for profile inspection>").ok();
+        writeln!(output).ok();
+    } else {
     writeln!(output, "audit:").ok();
     writeln!(output, "  install_style: {}", plan.audit.install_style).ok();
     writeln!(output, "  strict_security: {}", strict_security).ok();
@@ -63,32 +95,18 @@ fn render_plan(
     .ok();
     writeln!(
         output,
-        "  package_manager: {}",
-        plan.audit
-            .package_manager
-            .as_deref()
-            .unwrap_or("<none>")
-    )
-    .ok();
-    writeln!(
-        output,
         "  lockfile: {}",
         describe_lockfile_audit(&plan.audit.lockfile)
     )
     .ok();
     writeln!(
         output,
-        "  script_hooks: {}",
-        describe_script_hooks(&plan.audit.script_hooks)
-    )
-    .ok();
-    writeln!(
-        output,
-        "  audit_hooks: {}",
-        describe_audit_hooks(&plan.audit.audit_hooks)
+        "  pre_run: {}",
+        describe_pre_run(&plan.audit.pre_run)
     )
     .ok();
     writeln!(output).ok();
+    } // end audit block
 
     writeln!(output, "resolution:").ok();
     writeln!(output, "  profile: {}", plan.profile_name).ok();
@@ -155,6 +173,15 @@ fn render_plan(
 
     writeln!(output, "policy:").ok();
     writeln!(output, "  network: {}", plan.policy.network).ok();
+    writeln!(
+        output,
+        "  network_allow: {}",
+        describe_network_allow(
+            &plan.policy.network_allow,
+            &plan.policy.network_allow_patterns
+        )
+    )
+    .ok();
     writeln!(output, "  writable: {}", plan.policy.writable).ok();
     writeln!(
         output,
@@ -208,6 +235,12 @@ fn render_plan(
         }
     )
     .ok();
+    writeln!(
+        output,
+        "  pull_policy: {}",
+        plan.policy.pull_policy.as_deref().unwrap_or("<default>")
+    )
+    .ok();
     writeln!(output).ok();
 
     writeln!(output, "environment:").ok();
@@ -239,6 +272,10 @@ fn render_plan(
 
     writeln!(output, "mounts:").ok();
     for mount in &plan.mounts {
+        if mount.kind == "mask" {
+            writeln!(output, "  - mask {} (credential masked)", mount.target).ok();
+            continue;
+        }
         let source = mount
             .source
             .as_ref()
@@ -294,7 +331,45 @@ fn render_plan(
         }
     }
 
+    if show_command {
+        if let Some(podman_args) = render_podman_command(plan) {
+            writeln!(output).ok();
+            writeln!(output, "backend command:").ok();
+            writeln!(output, "  {podman_args}").ok();
+        }
+    }
+
     output
+}
+
+fn render_podman_command(plan: &ExecutionPlan) -> Option<String> {
+    if !matches!(plan.mode, crate::config::model::ExecutionMode::Sandbox) {
+        return None;
+    }
+    if !matches!(plan.backend, crate::config::BackendKind::Podman) {
+        return None;
+    }
+
+    let image = match &plan.image.source {
+        ResolvedImageSource::Reference(r) => r.clone(),
+        ResolvedImageSource::Build { tag, .. } => tag.clone(),
+    };
+
+    match crate::backend::podman::build_run_args(plan, &image) {
+        Ok(args) => {
+            let escaped: Vec<String> = std::iter::once("podman".to_string())
+                .chain(args.into_iter().map(|arg| {
+                    if arg.contains(' ') || arg.contains(',') {
+                        format!("'{arg}'")
+                    } else {
+                        arg
+                    }
+                }))
+                .collect();
+            Some(escaped.join(" "))
+        }
+        Err(_) => None,
+    }
 }
 
 fn describe_profile_source(source: &ProfileSource) -> String {
@@ -353,40 +428,41 @@ fn describe_lockfile_audit(audit: &crate::resolve::LockfileAudit) -> String {
     }
 }
 
-fn describe_script_hooks(audit: &crate::resolve::ScriptHookAudit) -> String {
-    if !audit.applicable {
-        return format!("policy={}, not-applicable", describe_script_policy(audit.policy));
-    }
-
-    let state = if audit.blocked { "blocked" } else { "allowed" };
-    format!("policy={}, {state}", describe_script_policy(audit.policy))
-}
-
-fn describe_script_policy(policy: crate::resolve::ScriptPolicyState) -> &'static str {
-    match policy {
-        crate::resolve::ScriptPolicyState::Allow => "allow",
-        crate::resolve::ScriptPolicyState::Ignore => "ignore",
-        crate::resolve::ScriptPolicyState::Block => "block",
-    }
-}
-
-fn describe_audit_hooks(audit: &crate::resolve::AuditHookAudit) -> String {
-    if audit.configured.is_empty() {
+fn describe_network_allow(
+    resolved: &[(String, String)],
+    patterns: &[String],
+) -> String {
+    if resolved.is_empty() && patterns.is_empty() {
         return "<none>".to_string();
     }
-
-    let configured = audit.configured.join(", ");
-    if audit.runnable.is_empty() {
-        return format!("configured ({configured}), runnable (<none>)");
+    let mut parts: Vec<String> = Vec::new();
+    if !resolved.is_empty() {
+        let hosts: Vec<String> = {
+            let mut seen = Vec::new();
+            for (host, _) in resolved {
+                if !seen.contains(host) {
+                    seen.push(host.clone());
+                }
+            }
+            seen
+        };
+        parts.push(format!("[resolved] {}", hosts.join(", ")));
     }
+    if !patterns.is_empty() {
+        parts.push(format!("[patterns] {}", patterns.join(", ")));
+    }
+    parts.join("; ")
+}
 
-    let runnable = audit
-        .runnable
+fn describe_pre_run(pre_run: &[Vec<String>]) -> String {
+    if pre_run.is_empty() {
+        return "<none>".to_string();
+    }
+    pre_run
         .iter()
-        .map(|hook| hook.name.as_str())
+        .map(|argv| argv.join(" "))
         .collect::<Vec<_>>()
-        .join(", ");
-    format!("configured ({configured}), runnable ({runnable})")
+        .join(", ")
 }
 
 fn describe_execution_mode(mode: &crate::config::model::ExecutionMode) -> &'static str {

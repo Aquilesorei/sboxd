@@ -11,3 +11,4 @@ pub mod init;
 pub mod plan;
 pub mod resolve;
 pub mod shell;
+pub mod shim;

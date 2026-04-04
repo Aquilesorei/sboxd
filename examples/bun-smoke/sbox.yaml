@@ -8,7 +8,18 @@ runtime:
 workspace:
   root: ../..
   mount: /workspace
-  writable: true
+  writable: false
+  writable_paths:
+    - node_modules
+  exclude_paths:
+    - .env
+    - .env.local
+    - .env.production
+    - .env.development
+    - "*.pem"
+    - "*.key"
+    - .npmrc
+    - .netrc
 
 image:
   ref: oven/bun:1.2.16
@@ -29,10 +40,13 @@ profiles:
     mode: sandbox
     network: on
     writable: true
+    role: install
     require_lockfile: true
-    script_policy: ignore
-    audit_hooks:
-      - bun-audit
+    lockfile_files:
+      - bun.lock
+      - bun.lockb
+    pre_run:
+      - bun audit
     ports: []
     no_new_privileges: true
 

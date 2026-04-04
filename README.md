@@ -1,31 +1,47 @@
 # sbox
 
-`sbox` is a policy-driven command runner for executing development commands on the host or inside a Podman sandbox.
+`sbox` is a policy-driven command runner that executes development commands on the host or inside a rootless Podman or Docker sandbox.
 
-The intended use case is hostile-by-default dependency installation. Package-manager commands such as `npm install` or `uv sync` should run in an isolated container with explicit mounts, explicit environment policy, and no accidental access to host credentials.
-
-The current Phase 10 policy layer understands install-oriented flows for:
-
-- `npm`, `pnpm`, `yarn`, `bun`
-- `uv`, `pip`, `poetry`
-- `cargo`, `go`, `composer`
+The intended use case is hostile-by-default dependency installation. Package-manager commands such as `npm install` or `uv sync` run in an isolated container with explicit mounts, explicit environment policy, and no accidental access to host credentials. The threat is malicious postinstall scripts — code that runs automatically during `npm install`, `pip install`, or similar — reading credential files, leaking environment variables, or exfiltrating source code.
 
 ## Status
 
-Current implemented scope:
+v1 and v2 are both complete. Current implemented scope:
 
-- `init`, `run`, `exec`, `shell`, `plan`, `doctor`, and `clean`
-- Podman backend for sandbox execution
-- reusable Podman sessions when enabled
-- security validation for dangerous mounts and sensitive env pass-through
+- `init`, `run`, `exec`, `shell`, `plan`, `doctor`, `clean`, and `shim`
+- Podman and Docker backends for sandbox execution
+- Reusable Podman/Docker sessions when enabled
+- Security validation: dangerous mounts, sensitive env pass-through, lockfile checks
 - `--strict-security` and `runtime.strict_security: true`
-- digest pinning and real image-signature verification checks through `skopeo` plus containers policy
+- Per-profile and global `require_pinned_image` enforcement
+- Image digest pinning and real signature verification via `skopeo` + containers policy
+- Package-manager-agnostic policy: `role`, `pre_run`, `lockfile_files` on profiles
+- Outbound network domain allow-listing with glob/regex pattern support
+- Backend auto-detection when `runtime.backend` is not set
+- Transparent shim interception for `npm`, `pnpm`, `yarn`, `bun`, `uv`, `pip`, `poetry`, `cargo`, and more
 
-Current limitations:
+## Installation
 
-- Docker sandbox execution is not implemented
-- `doctor` only performs backend checks for Podman
-- this repo currently has no gated integration test suite for local Podman; live backend checks have been done manually
+**From crates.io:**
+
+```bash
+cargo install sbox
+```
+
+**Pre-built binaries** (Linux x86_64 and aarch64) are attached to each [GitHub Release](../../releases):
+
+```bash
+curl -fsSL https://github.com/Aquilesorei/sbox/releases/latest/download/sbox-linux-x86_64 -o ~/.local/bin/sbox
+chmod +x ~/.local/bin/sbox
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/Aquilesorei/sbox
+cd sbox
+cargo install --path .
+```
 
 ## Quick Start
 
@@ -33,12 +49,6 @@ Initialize a project config:
 
 ```bash
 sbox init
-```
-
-This creates one user-facing config file:
-
-```text
-sbox.yaml
 ```
 
 Inspect the resolved policy before running anything:
@@ -77,18 +87,41 @@ Remove current-workspace reusable sessions:
 sbox clean
 ```
 
+### Transparent interception with shims
+
+`sbox shim` generates thin wrapper scripts for common package managers. When one of these wrappers is called from a directory that has an `sbox.yaml`, it transparently delegates to `sbox run`. Otherwise it calls the real binary unchanged.
+
+```bash
+# Install shims to ~/.local/bin (must appear before real binaries in PATH)
+sbox shim
+
+# Or specify a directory
+sbox shim --dir ~/bin
+
+# Preview without writing anything
+sbox shim --dry-run
+```
+
+Then add to your shell profile:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+After this, `npm install`, `uv sync`, `bun install`, etc. are automatically sandboxed in any project that has an `sbox.yaml`.
+
 ## Security Model
 
-The default security direction is:
+The default direction is:
 
 - prefer rootless Podman
-- disable network in normal sandbox profiles
-- only pass through host env vars explicitly
+- network off in sandbox profiles by default
+- only pass through host env vars explicitly configured
+- reject dangerous bind mounts: container sockets, `.ssh`, `.aws`, `.kube`, `.npmrc`, and similar
 - do not mount the home directory silently
-- reject dangerous bind mounts such as container sockets and common credential paths
-- keep dependency state outside the host workspace unless the user explicitly chooses otherwise
+- keep dependency state outside the host workspace unless the user explicitly opts in
 
-Strict mode hardens this further:
+### Strict mode
 
 ```bash
 sbox --strict-security run -- node --version
@@ -101,9 +134,38 @@ runtime:
   strict_security: true
 ```
 
-In strict mode, sandbox execution is refused if sensitive host variables are being passed through.
+Strict mode refuses sandbox execution if:
+- sensitive host variables are being passed through
+- install-style commands run without a lockfile present
+- the image is not pinned to a digest
 
-For sensitive profiles, `sbox` also supports:
+### Image trust
+
+Pin an image globally:
+
+```yaml
+image:
+  ref: node:22-bookworm-slim
+  digest: sha256:3efebb4f5f2952af4c86fe443a4e219129cc36f90e93d1ea2c4aa6cf65bdecf2
+```
+
+Require a pinned image for all sandbox profiles globally:
+
+```yaml
+runtime:
+  require_pinned_image: true
+```
+
+Require it only for a specific profile:
+
+```yaml
+profiles:
+  install:
+    mode: sandbox
+    require_pinned_image: true
+```
+
+When `require_pinned_image` is set, sbox enforces this at config-load time and refuses execution if the image has no digest. It also integrates with `skopeo` for real signature verification:
 
 ```yaml
 image:
@@ -112,117 +174,216 @@ image:
   verify_signature: true
 ```
 
-Important:
+- `digest` pins the image reference and is enforced at resolve time
+- `verify_signature: true` is a real runtime check via `skopeo` — not metadata
+- verification requires a containers policy that actually enforces signatures; a policy using `insecureAcceptAnything` does not count
 
-- `digest` pins the image reference and is enforced by `sbox`
-- `verify_signature: true` is a real runtime check, not metadata
-- verification requires `skopeo` and a containers policy that actually enforces signatures
-- a policy using `insecureAcceptAnything` does not count as verification
+`sbox doctor` reports whether signature verification is usable on the current machine.
 
-`sbox doctor` now reports whether signature verification is usable on the current machine and fails if the config requests it but the machine cannot enforce it.
+### Network allow-listing
 
-Package-manager-sensitive profiles can also add extra policy:
+Profiles with `network: on` can restrict outbound DNS to a specific set of domains:
 
 ```yaml
 profiles:
   install:
     mode: sandbox
     network: on
-    require_pinned_image: true
+    network_allow:
+      - registry.npmjs.org
+      - "*.npmjs.org"
+      - ".*\\.yarnpkg\\.com"
+```
+
+Three entry forms are supported:
+
+| Form | Example | Behavior |
+|------|---------|----------|
+| Exact hostname | `registry.npmjs.org` | DNS-resolved to IPs, injected as `--add-host` |
+| Glob prefix | `*.npmjs.org` | Base domain `npmjs.org` resolved, pattern stored for display |
+| Regex prefix | `.*\.npmjs\.org` | Same as glob — base domain unescaped and resolved |
+
+Enforcement works by pointing the container's DNS at a non-routable address (`192.0.2.1`) so arbitrary lookups time out, while injecting resolved IPs directly into `/etc/hosts` via `--add-host`. Raw IP connections bypass this; package managers use domain names.
+
+For glob/regex patterns, sbox expands the base domain to the full set of known subdomains before resolving. `*.npmjs.org` resolves `registry.npmjs.org`, `npmjs.org`, and `www.npmjs.org` — not just `npmjs.org` alone. Built-in expansion tables cover:
+
+- npm/yarn: `npmjs.org`, `yarnpkg.com`
+- Python: `pypi.org`, `pythonhosted.org`
+- Rust: `crates.io`
+- Go: `golang.org`, `go.dev`
+- Ruby: `rubygems.org`
+- Maven/Gradle: `maven.org`, `gradle.org`
+- GitHub: `github.com`, `githubusercontent.com`
+- OCI registries: `docker.io`, `ghcr.io`, `gcr.io`
+
+For unknown base domains only the base itself is resolved.
+
+`sbox plan` shows the resolved state:
+
+```
+  network_allow: [resolved] registry.npmjs.org, npmjs.org, www.npmjs.org; [patterns] *.npmjs.org
+```
+
+### Install-style policy
+
+Profiles declare their role explicitly rather than relying on command-pattern detection:
+
+```yaml
+profiles:
+  install:
+    mode: sandbox
+    role: install
+    lockfile_files:
+      - package-lock.json
+      - npm-shrinkwrap.json
+    pre_run:
+      - npm audit --audit-level=high
     require_lockfile: true
-    script_policy: ignore
-    audit_hooks:
-      - npm-audit
+    require_pinned_image: true
 ```
 
-These controls mean:
+- `role: install` — marks this profile as install-style; enables lockfile auditing
+- `lockfile_files` — which files to check for presence before running
+- `pre_run` — shell commands run on the **host** before the sandboxed command; if any fails, execution is refused
+- `require_lockfile: true` — refuses install-style commands in strict mode unless a lockfile is present
 
-- `require_lockfile: true` refuses install-style commands in strict mode unless the expected lockfile is present
-- `script_policy: ignore` requires lifecycle scripts to be disabled, for example with `--ignore-scripts`
-- `script_policy: block` refuses script-capable package-manager commands entirely
-- `audit_hooks` runs explicit preflight commands such as `npm audit`, `cargo audit`, `bun audit`, `composer audit`, or `govulncheck` before the main command and fails closed if the hook fails
+### Credential masking
 
-## Fedora / Podman Signature Setup
+Credentials that exist in the workspace can be masked from the container using `/dev/null` bind mounts:
 
-On Fedora, Podman commonly reads signature policy from:
-
-- `~/.config/containers/policy.json`
-- `/etc/containers/policy.json`
-
-The workstation default is often too permissive for `sbox` signature enforcement. If `doctor` reports:
-
-```text
-WARN signature-verify not currently usable: policy /etc/containers/policy.json does not enforce signature verification
+```yaml
+workspace:
+  exclude_paths:
+    - .env
+    - .env.local
+    - "*.pem"
+    - "*.key"
+    - .npmrc
+    - .netrc
 ```
 
-set up a user policy instead of changing the system-wide default immediately.
+Each matched file is replaced with a read-only `/dev/null` mount inside the container. This prevents postinstall scripts from reading secrets that happen to live in the project directory.
 
-Example files are provided in:
+## Backend selection
 
-- [examples/fedora-podman-signature-policy/README.md](/home/aquiles/RustroverProjects/sbox/examples/fedora-podman-signature-policy/README.md)
-- [examples/fedora-podman-signature-policy/policy.json](/home/aquiles/RustroverProjects/sbox/examples/fedora-podman-signature-policy/policy.json)
-- [examples/fedora-podman-signature-policy/registries.d/example.yaml](/home/aquiles/RustroverProjects/sbox/examples/fedora-podman-signature-policy/registries.d/example.yaml)
+sbox uses Podman by default. To use Docker:
 
-Basic Fedora flow:
-
-```bash
-mkdir -p ~/.config/containers
-mkdir -p ~/.config/containers/registries.d
-cp examples/fedora-podman-signature-policy/policy.json ~/.config/containers/policy.json
-cp examples/fedora-podman-signature-policy/registries.d/example.yaml ~/.config/containers/registries.d/example.yaml
+```yaml
+runtime:
+  backend: docker
 ```
 
-Then replace the placeholder registry scope, GPG key path, and lookaside URL with your real values and run:
+When `runtime.backend` is omitted, sbox probes PATH at execution time: Podman is preferred if available, Docker otherwise.
 
-```bash
-sbox doctor
+## `sbox.yaml` reference
+
+A minimal config:
+
+```yaml
+version: 1
+
+runtime:
+  backend: podman
+  rootless: true
+
+workspace:
+  mount: /workspace
+  writable: false
+
+image:
+  ref: node:22-bookworm-slim
+  digest: sha256:...
+
+profiles:
+  default:
+    mode: sandbox
+    network: off
+
+  install:
+    mode: sandbox
+    network: on
+    role: install
+    require_pinned_image: true
+    lockfile_files:
+      - package-lock.json
+    pre_run:
+      - npm audit --audit-level=high
+    network_allow:
+      - registry.npmjs.org
+
+dispatch:
+  npm-install:
+    match:
+      - npm install
+      - npm ci
+    profile: install
 ```
 
-For `verify_signature: true` to work, all of these must be true:
+Top-level keys:
 
-- `skopeo` is installed
-- the selected containers policy contains a real verification rule such as `signedBy` or `sigstoreSigned`
-- the configured registry scope matches the image reference
-- the referenced keys and signature storage are valid
-
-For the gated signature-verification integration test, provide both:
-
-```bash
-export SBOX_RUN_PODMAN_TESTS=1
-export SBOX_SIGNATURE_POLICY=/path/to/verification-capable-policy.json
-export SBOX_SIGNED_TEST_IMAGE=registry.example.com/team/secure-images/app@sha256:...
-cargo test --test podman_integration_tests -- --nocapture
-```
-
-The signed-image test skips automatically if those variables are not set.
-
-## `sbox.yaml`
-
-Normal users should create and maintain only one config file:
-
-```text
-sbox.yaml
-```
-
-That file defines:
-
-- runtime backend
-- image
-- workspace mount
-- environment policy
-- caches
-- secrets
-- profiles
-- dispatch rules
+| Key | Description |
+|-----|-------------|
+| `version` | Must be `1` |
+| `runtime` | Backend, rootless mode, reuse settings, image trust policy |
+| `workspace` | Host root, container mount path, writable policy, credential exclusions |
+| `image` | Image reference, digest, build recipe, signature policy |
+| `identity` | User/group mapping |
+| `environment` | Env var pass-through, explicit set, deny list |
+| `mounts` | Extra bind or tmpfs mounts |
+| `caches` | Named persistent volumes |
+| `secrets` | Host files mounted read-only into the container |
+| `profiles` | Execution policies indexed by name |
+| `dispatch` | Command pattern → profile routing rules |
 
 ## Examples
 
 Repository examples:
 
-- [sbox.yaml](/home/aquiles/RustroverProjects/sbox/sbox.yaml): `uv`-based Python example with isolated cache and environment
-- [examples/python-smoke/reuse-sbox.yaml](/home/aquiles/RustroverProjects/sbox/examples/python-smoke/reuse-sbox.yaml): reusable Python sandbox session example
-- [examples/npm-smoke/sbox.yaml](/home/aquiles/RustroverProjects/sbox/examples/npm-smoke/sbox.yaml): npm example with isolated cache, install prefix, and artifact storage
-- [examples/bun-smoke/sbox.yaml](/home/aquiles/RustroverProjects/sbox/examples/bun-smoke/sbox.yaml): bun example with lockfile-aware install policy and an audit hook
-- [examples/poetry-smoke/sbox.yaml](/home/aquiles/RustroverProjects/sbox/examples/poetry-smoke/sbox.yaml): poetry example with isolated cache and virtualenv paths
+- [sbox.yaml](sbox.yaml): `uv`-based Python example with isolated cache and environment
+- [examples/python-smoke/reuse-sbox.yaml](examples/python-smoke/reuse-sbox.yaml): reusable Python sandbox session
+- [examples/npm-smoke/sbox.yaml](examples/npm-smoke/sbox.yaml): npm with isolated cache, install prefix, artifact storage, and network allow-list
+- [examples/bun-smoke/sbox.yaml](examples/bun-smoke/sbox.yaml): bun with lockfile-aware install policy and preflight audit
+- [examples/poetry-smoke/sbox.yaml](examples/poetry-smoke/sbox.yaml): poetry with isolated cache and virtualenv paths
 
-These examples are designed so dependency installation happens inside the sandbox and dependency state does not land in the host workspace by default.
+## Post-install artifact risk
+
+`sbox` isolates the install step. Once the sandbox exits, installed artifacts (`node_modules`, `.venv`, built binaries) live on the host. Any subsequent invocation outside of `sbox` — running `node`, `npx`, `python`, a script from `node_modules/.bin`, etc. — executes that code with full host privileges.
+
+**Option 1 — Route all execution through sbox**
+
+Add a `default` profile with `network: off` and route every project command through it:
+
+```bash
+sbox run -- npm start
+sbox run -- node server.js
+```
+
+**Option 2 — Keep dependencies out of the workspace entirely**
+
+Redirect package manager output to cache volumes so nothing lands in the workspace:
+
+```yaml
+environment:
+  set:
+    npm_config_prefix: /var/tmp/sbox/npm-prefix
+
+caches:
+  - name: npm-prefix
+    target: /var/tmp/sbox/npm-prefix
+```
+
+Equivalent patterns exist for uv (`UV_PROJECT_ENVIRONMENT`), poetry (`POETRY_VIRTUALENVS_PATH`), and bun (`BUN_INSTALL_CACHE_DIR`).
+
+## Fedora / Podman Signature Setup
+
+On Fedora, Podman reads signature policy from `~/.config/containers/policy.json` or `/etc/containers/policy.json`. The workstation default is too permissive for `sbox` signature enforcement.
+
+Example files are in [examples/fedora-podman-signature-policy/](examples/fedora-podman-signature-policy/).
+
+```bash
+mkdir -p ~/.config/containers/registries.d
+cp examples/fedora-podman-signature-policy/policy.json ~/.config/containers/policy.json
+cp examples/fedora-podman-signature-policy/registries.d/example.yaml ~/.config/containers/registries.d/example.yaml
+```
+
+Replace the placeholder registry scope, GPG key path, and lookaside URL with real values, then run `sbox doctor` to verify.

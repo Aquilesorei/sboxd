@@ -20,8 +20,30 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
 
     match &config.runtime {
         Some(runtime) => {
-            if runtime.backend.is_none() {
-                errors.push("`runtime.backend` is required".to_string());
+            if runtime.rootless == Some(false) {
+                if let Some(identity) = &config.identity {
+                    if identity.map_user == Some(true) {
+                        errors.push(
+                            "`identity.map_user: true` conflicts with `runtime.rootless: false`; \
+                             --userns keep-id is only valid in rootless Podman"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+
+            if runtime.require_pinned_image == Some(true) {
+                let global_digest_set = config.image.as_ref().and_then(|i| i.digest.as_ref()).is_some();
+                if !global_digest_set {
+                    let all_sandbox_profiles_have_digest = config.profiles.values()
+                        .filter(|p| matches!(p.mode, ExecutionMode::Sandbox))
+                        .all(|p| p.image.as_ref().and_then(|i| i.digest.as_ref()).is_some());
+                    if !all_sandbox_profiles_have_digest {
+                        errors.push(
+                            "`runtime.require_pinned_image: true` requires `image.digest` to be set (or all sandbox profiles to have per-profile image digests)".to_string()
+                        );
+                    }
+                }
             }
         }
         None => errors.push("`runtime` section is required".to_string()),
@@ -37,6 +59,44 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
                 errors.push(format!(
                     "`workspace.mount` must be an absolute path: `{mount}`"
                 ));
+            }
+
+            for path in &workspace.writable_paths {
+                if path.trim().is_empty() {
+                    errors.push(
+                        "`workspace.writable_paths` entries must not be empty".to_string(),
+                    );
+                    continue;
+                }
+                let p = std::path::Path::new(path);
+                if p.is_absolute() {
+                    errors.push(format!(
+                        "`workspace.writable_paths` entry must be a relative path: `{path}`"
+                    ));
+                } else if p
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+                {
+                    errors.push(format!(
+                        "`workspace.writable_paths` entry must not contain `..`: `{path}`"
+                    ));
+                }
+            }
+
+            for pattern in &workspace.exclude_paths {
+                if pattern.trim().is_empty() {
+                    errors.push(
+                        "`workspace.exclude_paths` entries must not be empty".to_string(),
+                    );
+                    continue;
+                }
+                // Strip the leading **/ glob prefix before checking for absolute paths
+                let effective = pattern.trim_start_matches("**/");
+                if std::path::Path::new(effective).is_absolute() {
+                    errors.push(format!(
+                        "`workspace.exclude_paths` entry must be a relative pattern: `{pattern}`"
+                    ));
+                }
             }
         }
         None => errors.push("`workspace` section is required".to_string()),
@@ -157,6 +217,41 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
                 "profile `{name}` cannot expose ports in `host` mode"
             ));
         }
+
+        if let Some(crate::config::model::CapabilitiesSpec::Keyword(keyword)) =
+            &profile.capabilities
+        {
+            if keyword != "drop-all" {
+                errors.push(format!(
+                    "profile `{name}` has unknown capabilities keyword `{keyword}`; \
+                     use `drop-all`, a list `[CAP_NAME, ...]`, or a structured form `{{ drop: [...], add: [...] }}`"
+                ));
+            }
+        }
+
+        for domain in &profile.network_allow {
+            if domain.trim().is_empty() {
+                errors.push(format!(
+                    "profile `{name}` has an empty entry in `network_allow`"
+                ));
+            }
+        }
+
+        if !profile.network_allow.is_empty() && profile.network.as_deref() == Some("off") {
+            errors.push(format!(
+                "profile `{name}` sets `network_allow` but `network: off` — allow-listing has no effect when network is disabled"
+            ));
+        }
+
+        if profile.require_pinned_image == Some(true) {
+            let has_digest = profile.image.as_ref().and_then(|i| i.digest.as_ref()).is_some()
+                || config.image.as_ref().and_then(|i| i.digest.as_ref()).is_some();
+            if !has_digest {
+                errors.push(format!(
+                    "profile `{name}` sets `require_pinned_image: true` but no image digest is configured (set `image.digest` globally or in the profile's image override)"
+                ));
+            }
+        }
     }
 
     for (name, rule) in &config.dispatch {
@@ -267,8 +362,14 @@ fn is_sensitive_host_path(path: &Path) -> bool {
         "/var/run/podman/podman.sock",
         "/run/podman/podman.sock",
     ];
-    const PREFIX_PATHS: &[&str] = &[".ssh", ".aws", ".kube", ".config/gcloud", ".gnupg"];
-    const FILE_PATHS: &[&str] = &[".git-credentials", ".npmrc", ".pypirc", ".netrc"];
+    const PREFIX_PATHS: &[&str] = &[".ssh", ".aws", ".kube", ".config/gcloud", ".gnupg", ".docker"];
+    const FILE_PATHS: &[&str] = &[
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        ".docker/config.json",
+    ];
 
     if EXACT_PATHS
         .iter()
@@ -321,9 +422,11 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-                script_policy: None,
+            role: None,
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: Vec::new(),
                 ports: Vec::new(),
-                audit_hooks: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
@@ -341,11 +444,14 @@ mod tests {
                 container_name: None,
                 pull_policy: None,
                 strict_security: None,
+                require_pinned_image: None,
             }),
             workspace: Some(WorkspaceConfig {
                 root: Some(PathBuf::from(".")),
                 mount: Some("/workspace".into()),
                 writable: Some(true),
+                writable_paths: Vec::new(),
+                exclude_paths: Vec::new(),
             }),
             identity: None,
             image: Some(ImageConfig {
@@ -393,6 +499,46 @@ mod tests {
         config.mounts.push(MountConfig {
             source: Some(PathBuf::from("/var/run/docker.sock")),
             target: Some("/run/docker.sock".into()),
+            mount_type: MountType::Bind,
+            read_only: Some(true),
+            create: None,
+        });
+
+        let error = validate_config(&config).expect_err("validation should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must not mount sensitive host credential or socket paths")
+        );
+    }
+
+    #[test]
+    fn rejects_docker_config_dir_mount() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let mut config = base_config();
+        config.mounts.push(MountConfig {
+            source: Some(PathBuf::from(format!("{home}/.docker"))),
+            target: Some("/run/docker-config".into()),
+            mount_type: MountType::Bind,
+            read_only: Some(true),
+            create: None,
+        });
+
+        let error = validate_config(&config).expect_err("validation should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must not mount sensitive host credential or socket paths")
+        );
+    }
+
+    #[test]
+    fn rejects_docker_config_json_mount() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let mut config = base_config();
+        config.mounts.push(MountConfig {
+            source: Some(PathBuf::from(format!("{home}/.docker/config.json"))),
+            target: Some("/run/docker-config.json".into()),
             mount_type: MountType::Bind,
             read_only: Some(true),
             create: None,

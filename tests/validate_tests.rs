@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use sbox::config::model::{
-    BackendKind, CacheConfig, Config, DispatchRule, EnvironmentConfig, ExecutionMode, ImageConfig,
-    MountConfig, MountType, ProfileConfig, RuntimeConfig, WorkspaceConfig,
+    BackendKind, CacheConfig, CapabilitiesSpec, Config, DispatchRule, EnvironmentConfig,
+    ExecutionMode, IdentityConfig, ImageConfig, MountConfig, MountType, ProfileConfig,
+    RuntimeConfig, WorkspaceConfig,
 };
 use sbox::config::validate::validate_config;
 
@@ -19,9 +20,11 @@ fn base_config() -> Config {
             writable: Some(true),
             require_pinned_image: None,
             require_lockfile: None,
-            script_policy: None,
+            role: None,
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: Vec::new(),
             ports: Vec::new(),
-            audit_hooks: Vec::new(),
             capabilities: None,
             no_new_privileges: Some(true),
             read_only_rootfs: None,
@@ -39,11 +42,14 @@ fn base_config() -> Config {
             reuse_container: Some(false),
             container_name: None,
             pull_policy: None,
+            require_pinned_image: None,
         }),
         workspace: Some(WorkspaceConfig {
             root: Some(PathBuf::from(".")),
             mount: Some("/workspace".to_string()),
             writable: Some(true),
+            writable_paths: Vec::new(),
+                exclude_paths: Vec::new(),
         }),
         identity: None,
         image: Some(ImageConfig {
@@ -93,12 +99,12 @@ fn rejects_missing_runtime_section() {
 }
 
 #[test]
-fn rejects_missing_runtime_backend() {
+fn accepts_missing_runtime_backend() {
+    // backend is now optional — auto-detection handles the missing case at runtime
     let mut config = base_config();
     config.runtime.as_mut().unwrap().backend = None;
 
-    let error = validate_config(&config).expect_err("validation should fail");
-    assert!(error.to_string().contains("backend"));
+    validate_config(&config).expect("missing backend should be accepted (auto-detected at runtime)");
 }
 
 #[test]
@@ -354,9 +360,11 @@ fn accepts_valid_secret() {
             writable: Some(true),
             require_pinned_image: None,
             require_lockfile: None,
-            script_policy: None,
+            role: None,
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: Vec::new(),
             ports: Vec::new(),
-            audit_hooks: Vec::new(),
             capabilities: None,
             no_new_privileges: Some(true),
             read_only_rootfs: None,
@@ -517,4 +525,181 @@ fn validates_multiple_errors_at_once() {
     assert!(error_str.contains("runtime"));
     assert!(error_str.contains("workspace"));
     assert!(error_str.contains("image"));
+}
+
+#[test]
+fn rejects_unknown_capabilities_keyword() {
+    let mut config = base_config();
+    config.profiles.get_mut("default").unwrap().capabilities =
+        Some(CapabilitiesSpec::Keyword("all".to_string()));
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains("unknown capabilities keyword"),
+        "expected unknown capabilities keyword error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn accepts_drop_all_capabilities_keyword() {
+    let mut config = base_config();
+    config.profiles.get_mut("default").unwrap().capabilities =
+        Some(CapabilitiesSpec::Keyword("drop-all".to_string()));
+
+    validate_config(&config).expect("drop-all should be valid");
+}
+
+#[test]
+fn rejects_map_user_true_when_rootless_is_false() {
+    let mut config = base_config();
+    config.runtime = Some(RuntimeConfig {
+        backend: Some(BackendKind::Podman),
+        rootless: Some(false),
+        strict_security: None,
+        reuse_container: Some(false),
+        container_name: None,
+        pull_policy: None,
+        require_pinned_image: None,
+    });
+    config.identity = Some(IdentityConfig {
+        uid: None,
+        gid: None,
+        map_user: Some(true),
+    });
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains("conflicts with"),
+        "expected conflict error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_absolute_writable_path() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(false),
+        writable_paths: vec!["/absolute/path".to_string()],
+        exclude_paths: Vec::new(),
+    });
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains("relative path"),
+        "expected relative path error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_writable_path_with_traversal() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(false),
+        writable_paths: vec!["../escape".to_string()],
+        exclude_paths: Vec::new(),
+    });
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains(".."),
+        "expected traversal error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_empty_writable_path_entry() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(false),
+        writable_paths: vec!["  ".to_string()],
+        exclude_paths: Vec::new(),
+    });
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains("must not be empty"),
+        "expected empty entry error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn accepts_valid_writable_paths() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(false),
+        writable_paths: vec!["node_modules".to_string(), "dist".to_string()],
+        exclude_paths: Vec::new(),
+    });
+
+    validate_config(&config).expect("valid writable_paths should be accepted");
+}
+
+#[test]
+fn rejects_absolute_exclude_path() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(true),
+        writable_paths: Vec::new(),
+        exclude_paths: vec!["/etc/passwd".to_string()],
+    });
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains("relative pattern"),
+        "expected relative pattern error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_empty_exclude_path_entry() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(true),
+        writable_paths: Vec::new(),
+        exclude_paths: vec!["".to_string()],
+    });
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(
+        error.to_string().contains("must not be empty"),
+        "expected empty entry error, got: {}",
+        error
+    );
+}
+
+#[test]
+fn accepts_valid_exclude_paths() {
+    let mut config = base_config();
+    config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from(".")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(true),
+        writable_paths: Vec::new(),
+        exclude_paths: vec![
+            ".env".to_string(),
+            "*.pem".to_string(),
+            "**/*.key".to_string(),
+            ".env.local".to_string(),
+        ],
+    });
+
+    validate_config(&config).expect("valid exclude_paths should be accepted");
 }

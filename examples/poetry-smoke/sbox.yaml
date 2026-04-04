@@ -8,7 +8,17 @@ runtime:
 workspace:
   root: ../..
   mount: /workspace
-  writable: true
+  writable: false
+  writable_paths: []
+  exclude_paths:
+    - .env
+    - .env.local
+    - .env.production
+    - .env.development
+    - "*.pem"
+    - "*.key"
+    - .pypirc
+    - .netrc
 
 image:
   ref: python:3.13-slim
@@ -31,7 +41,10 @@ profiles:
     mode: sandbox
     network: on
     writable: true
+    role: install
     require_lockfile: true
+    lockfile_files:
+      - poetry.lock
     ports: []
     no_new_privileges: true
 
