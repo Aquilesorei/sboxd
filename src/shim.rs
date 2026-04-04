@@ -1,0 +1,188 @@
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use crate::cli::ShimCommand;
+use crate::error::SboxError;
+
+/// Package managers that sbox knows how to intercept.
+const SHIM_TARGETS: &[&str] = &[
+    "npm", "pnpm", "yarn", "bun", "uv", "pip", "pip3", "poetry", "cargo", "composer",
+];
+
+pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
+    let shim_dir = resolve_shim_dir(command)?;
+
+    if !command.dry_run {
+        fs::create_dir_all(&shim_dir).map_err(|source| SboxError::InitWrite {
+            path: shim_dir.clone(),
+            source,
+        })?;
+    }
+
+    let mut created = 0usize;
+    let mut skipped = 0usize;
+
+    for &name in SHIM_TARGETS {
+        let dest = shim_dir.join(name);
+
+        if dest.exists() && !command.force && !command.dry_run {
+            println!("skip   {} (already exists; use --force to overwrite)", dest.display());
+            skipped += 1;
+            continue;
+        }
+
+        let real_binary = find_real_binary(name, &shim_dir);
+        let script = render_shim(name, real_binary.as_deref());
+
+        if command.dry_run {
+            match &real_binary {
+                Some(p) => println!("would create {} -> {}", dest.display(), p.display()),
+                None => println!("would create {} (real binary not found)", dest.display()),
+            }
+            created += 1;
+            continue;
+        }
+
+        fs::write(&dest, &script).map_err(|source| SboxError::InitWrite {
+            path: dest.clone(),
+            source,
+        })?;
+
+        let mut perms = fs::metadata(&dest)
+            .map_err(|source| SboxError::InitWrite { path: dest.clone(), source })?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dest, perms).map_err(|source| SboxError::InitWrite {
+            path: dest.clone(),
+            source,
+        })?;
+
+        match &real_binary {
+            Some(p) => println!("created {} -> {}", dest.display(), p.display()),
+            None => println!("created {} (real binary not found at shim time)", dest.display()),
+        }
+        created += 1;
+    }
+
+    if !command.dry_run {
+        println!();
+        if created > 0 {
+            println!("Add {} to your PATH before the real package manager binaries:", shim_dir.display());
+            println!();
+            println!("  export PATH=\"{}:$PATH\"", shim_dir.display());
+            println!();
+            println!("Then restart your shell or run: source ~/.bashrc");
+        }
+        if skipped > 0 {
+            println!("({skipped} skipped — use --force to overwrite)");
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn resolve_shim_dir(command: &ShimCommand) -> Result<PathBuf, SboxError> {
+    if let Some(dir) = &command.dir {
+        let abs = if dir.is_absolute() {
+            dir.clone()
+        } else {
+            std::env::current_dir()
+                .map_err(|source| SboxError::CurrentDirectory { source })?
+                .join(dir)
+        };
+        return Ok(abs);
+    }
+
+    // Default: ~/.local/bin
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join(".local/bin"));
+    }
+
+    // Last resort: use current directory
+    std::env::current_dir()
+        .map_err(|source| SboxError::CurrentDirectory { source })
+}
+
+/// Search PATH for `name`, skipping `exclude_dir` to avoid resolving the shim itself.
+fn find_real_binary(name: &str, exclude_dir: &Path) -> Option<PathBuf> {
+    let path_os = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_os) {
+        if dir == exclude_dir {
+            continue;
+        }
+        let candidate = dir.join(name);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    path.metadata()
+        .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+        .unwrap_or(false)
+}
+
+/// Render a POSIX shell shim script for the given package manager.
+///
+/// The script walks up the directory tree looking for `sbox.yaml`. When found it
+/// delegates to `sbox run -- <name> "$@"`. Otherwise it falls through to the real
+/// binary (hardcoded at shim-generation time to avoid PATH loops).
+fn render_shim(name: &str, real_binary: Option<&Path>) -> String {
+    let fallback = match real_binary {
+        Some(path) => format!("exec {} \"$@\"", path.display()),
+        None => format!(
+            "printf 'sbox shim: {name}: real binary not found; reinstall or run `sbox shim` again\\n' >&2\nexit 127"
+        ),
+    };
+
+    // Note: the ${_sbox_d%/*} shell parameter expansion is written literally here.
+    // It strips the last path component, walking up the directory tree.
+    format!(
+        "#!/bin/sh\n\
+         # sbox shim: {name}\n\
+         # Generated by `sbox shim`. Re-run `sbox shim --dir DIR` to regenerate.\n\
+         _sbox_d=\"$PWD\"\n\
+         while true; do\n\
+         \x20 if [ -f \"$_sbox_d/sbox.yaml\" ]; then\n\
+         \x20   exec sbox run -- {name} \"$@\"\n\
+         \x20 fi\n\
+         \x20 [ \"$_sbox_d\" = \"/\" ] && break\n\
+         \x20 _sbox_d=\"${{_sbox_d%/*}}\"\n\
+         \x20 [ -z \"$_sbox_d\" ] && _sbox_d=\"/\"\n\
+         done\n\
+         {fallback}\n"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_shim;
+
+    #[test]
+    fn shim_contains_sbox_run_delegation() {
+        let script = render_shim("npm", Some(std::path::Path::new("/usr/bin/npm")));
+        assert!(script.contains("exec sbox run -- npm \"$@\""));
+        assert!(script.contains("sbox.yaml"));
+        assert!(script.contains("exec /usr/bin/npm \"$@\""));
+    }
+
+    #[test]
+    fn shim_fallback_when_real_binary_missing() {
+        let script = render_shim("npm", None);
+        assert!(script.contains("real binary not found"));
+        assert!(script.contains("exit 127"));
+    }
+
+    #[test]
+    fn shim_walks_to_root() {
+        let script = render_shim("uv", Some(std::path::Path::new("/usr/local/bin/uv")));
+        // The parent-dir stripping logic
+        assert!(script.contains("_sbox_d%/*"));
+        // Terminates at root
+        assert!(script.contains("[ \"$_sbox_d\" = \"/\" ] && break"));
+    }
+}
