@@ -62,6 +62,10 @@ pub struct InitCommand {
 
     #[arg(long)]
     pub output: Option<PathBuf>,
+
+    /// Launch an interactive wizard to generate sbox.yaml
+    #[arg(long, short = 'i')]
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, Args)]
