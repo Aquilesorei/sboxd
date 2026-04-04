@@ -1,8 +1,20 @@
 # sbox
 
-`sbox` is a policy-driven command runner that executes development commands on the host or inside a rootless Podman or Docker sandbox.
+`sbox` is a policy-driven command runner that executes development commands inside a rootless Podman or Docker sandbox.
 
-The intended use case is hostile-by-default dependency installation. Package-manager commands such as `npm install` or `uv sync` run in an isolated container with explicit mounts, explicit environment policy, and no accidental access to host credentials. The threat is malicious postinstall scripts — code that runs automatically during `npm install`, `pip install`, or similar — reading credential files, leaking environment variables, or exfiltrating source code.
+The threat it addresses: **malicious postinstall scripts**. Code that runs automatically during `npm install`, `pip install`, or `cargo build` can read `~/.ssh/id_rsa`, dump `AWS_SECRET_ACCESS_KEY` from the environment, or exfiltrate your source to an attacker's server. sbox runs those commands in an isolated container with no access to host credentials, no network unless you explicitly allow it, and a read-only workspace.
+
+The March 31 2026 Axios npm supply chain attack (Sapphire Sleet RAT delivered via postinstall hook) is exactly the scenario sbox is built to contain. An `npm install` inside a sbox sandbox with `network: off` and credential masking would have blocked that payload entirely.
+
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| Linux + Podman | **First-class** — rootless, no root required |
+| Linux + Docker | **Supported** — same feature set, requires Docker socket access |
+| macOS + Docker Desktop | **Partial** — containers run in a Linux VM; most features work, `keep-id` user mapping may differ |
+| macOS + Podman Machine | **Partial** — similar to Docker Desktop |
+| Windows | **Not supported** |
 
 ## Status
 
@@ -43,12 +55,31 @@ cd sbox
 cargo install --path .
 ```
 
+## Documentation
+
+- [Getting started](docs/getting-started.md)
+- [Progressive adoption](docs/adoption.md) — how to add sbox to an existing project without breaking your workflow
+- [Ecosystem guides](docs/ecosystems.md) — Node.js, Python, Rust, Go configs
+- [Network security](docs/network.md) — `network: off` vs `network_allow`, the download/postinstall tension
+- [Security model](docs/security.md) — what is blocked, what is not, adversarial test results
+- [Shims](docs/shims.md) — transparent interception for npm, pip, cargo, and others
+- [Recipes](docs/recipes.md) — CI pipelines, private registries, reusable sessions
+- [Troubleshooting](docs/troubleshooting.md) — common errors and fixes
+- [Config reference](docs/config.md) — full `sbox.yaml` field reference
+- [Architecture](docs/architecture.md) — internals and contribution guide
+
 ## Quick Start
 
-Initialize a project config:
+Initialize a project config interactively (arrow-key menus, no manual editing):
 
 ```bash
-sbox init
+sbox init --interactive
+```
+
+Or generate from a preset directly:
+
+```bash
+sbox init --preset node    # node / python / rust / go / generic
 ```
 
 Inspect the resolved policy before running anything:
