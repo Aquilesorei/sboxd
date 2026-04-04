@@ -386,6 +386,7 @@ fn accepts_valid_secret() {
         ),
         target: "/run/secrets/npm_token".to_string(),
         when_profiles: vec!["install".to_string()],
+        deny_roles: vec![],
     });
 
     validate_config(&config).expect("valid secret should pass");
@@ -399,6 +400,7 @@ fn rejects_secret_referencing_unknown_profile() {
         source: "/path/to/token".to_string(),
         target: "/run/secrets/token".to_string(),
         when_profiles: vec!["nonexistent".to_string()],
+        deny_roles: vec![],
     });
 
     let error = validate_config(&config).expect_err("validation should fail");

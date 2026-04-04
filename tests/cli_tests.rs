@@ -55,6 +55,7 @@ fn parse_init_command() {
             force,
             preset,
             output,
+            ..
         }) => {
             assert!(!force);
             assert!(preset.is_none());

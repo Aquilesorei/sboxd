@@ -145,7 +145,7 @@ pub(crate) fn validate_execution_safety(
     })
 }
 
-fn run_pre_run_commands(plan: &ExecutionPlan) -> Result<(), SboxError> {
+pub(crate) fn run_pre_run_commands(plan: &ExecutionPlan) -> Result<(), SboxError> {
     for argv in &plan.audit.pre_run {
         let (program, args) = argv
             .split_first()

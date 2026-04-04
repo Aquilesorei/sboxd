@@ -6,9 +6,15 @@ use std::process::ExitCode;
 use crate::cli::ShimCommand;
 use crate::error::SboxError;
 
-/// Package managers that sbox knows how to intercept.
+/// Package managers and runtimes that sbox knows how to intercept.
+/// Install-time tools (npm, pip, ...) catch supply-chain attacks at the source.
+/// Runtime tools (node, python3, go, ...) close the post-install artifact gap:
+/// code planted in node_modules/.bin during install can't run unsandboxed if `node` is shimmed.
 const SHIM_TARGETS: &[&str] = &[
-    "npm", "pnpm", "yarn", "bun", "uv", "pip", "pip3", "poetry", "cargo", "composer",
+    // package managers / installers
+    "npm", "npx", "pnpm", "yarn", "bun", "uv", "pip", "pip3", "poetry", "cargo", "composer",
+    // runtimes — prevent post-install artifacts from running on the bare host
+    "node", "python3", "python", "go",
 ];
 
 pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
@@ -133,7 +139,10 @@ fn is_executable_file(path: &Path) -> bool {
 /// binary (hardcoded at shim-generation time to avoid PATH loops).
 fn render_shim(name: &str, real_binary: Option<&Path>) -> String {
     let fallback = match real_binary {
-        Some(path) => format!("exec {} \"$@\"", path.display()),
+        Some(path) => format!(
+            "printf 'sbox: no sbox.yaml found — running {name} unsandboxed\\n' >&2\nexec {path} \"$@\"",
+            path = path.display()
+        ),
         None => format!(
             "printf 'sbox shim: {name}: real binary not found; reinstall or run `sbox shim` again\\n' >&2\nexit 127"
         ),
@@ -168,6 +177,7 @@ mod tests {
         assert!(script.contains("exec sbox run -- npm \"$@\""));
         assert!(script.contains("sbox.yaml"));
         assert!(script.contains("exec /usr/bin/npm \"$@\""));
+        assert!(script.contains("running npm unsandboxed"));
     }
 
     #[test]

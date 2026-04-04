@@ -50,6 +50,7 @@ pub enum Commands {
     Doctor(DoctorCommand),
     Clean(CleanCommand),
     Shim(ShimCommand),
+    Bootstrap(BootstrapCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -136,6 +137,12 @@ pub enum CliExecutionMode {
     Host,
     Sandbox,
 }
+
+/// Generate the package lockfile inside the sandbox without running install scripts.
+/// Requires `package_manager:` to be configured in sbox.yaml.
+/// After bootstrap, run `sbox run -- <rebuild-command>` to execute scripts with network off.
+#[derive(Debug, Clone, Args, Default)]
+pub struct BootstrapCommand {}
 
 #[derive(Debug, Clone, Args)]
 pub struct ShimCommand {

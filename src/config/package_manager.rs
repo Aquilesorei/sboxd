@@ -94,10 +94,11 @@ static PRESETS: &[(&str, Preset)] = &[
     (
         "cargo",
         Preset {
-            install_patterns: &["cargo fetch*", "cargo build*"],
-            build_patterns:   &["cargo build --release*"],
+            // fetch/generate-lockfile acquire deps from the network; build/check/test are offline
+            install_patterns: &["cargo fetch*", "cargo generate-lockfile*"],
+            build_patterns:   &["cargo build*", "cargo check*", "cargo test*"],
             install_writable: &["target"],
-            build_writable:   &["target/release"],
+            build_writable:   &["target"],
             network_allow:    &["crates.io", "static.crates.io", "index.crates.io"],
             lockfile_files:   &["Cargo.lock"],
         },
@@ -106,9 +107,10 @@ static PRESETS: &[(&str, Preset)] = &[
         "go",
         Preset {
             install_patterns: &["go get*", "go mod download*", "go mod tidy*"],
-            build_patterns:   &["go build*"],
+            // Require explicit -o so the output path is declared and writable
+            build_patterns:   &["go build -o dist/*", "go build -o bin/*", "go build ./..."],
             install_writable: &["vendor"],
-            build_writable:   &[],
+            build_writable:   &["dist", "bin"],
             network_allow:    &["proxy.golang.org", "sum.golang.org"],
             lockfile_files:   &["go.sum"],
         },

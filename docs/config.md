@@ -205,8 +205,10 @@ profiles:
       - npm-shrinkwrap.json
     pre_run:                  # host commands run before the sandboxed command
       - npm audit --audit-level=high
-    cap_drop:                 # Linux capabilities to drop
-      - NET_RAW
+    capabilities:             # Linux capabilities (three forms accepted)
+      drop: [all]             #   { drop: [...], add: [...] } — structured (preferred)
+      add: [NET_BIND_SERVICE] #   "drop-all"                 — drop all caps, add none
+                              #   ["CAP_NET_ADMIN"]          — list treated as cap_add
     ports: []                 # published ports (only with network: on)
     reuse_container: false    # override runtime.reuse_container for this profile
     writable_paths:           # override workspace.writable_paths for this profile only
@@ -219,14 +221,14 @@ profiles:
 | `mode` | `sandbox` | `sandbox` runs in a container. `host` runs the command directly on the host (no sandboxing). |
 | `network` | `off` | `off` passes `--network none`. `on` uses the default container network. |
 | `network_allow` | `[]` | Hostname allowlist. Requires `network: on`. See [network.md](network.md). |
-| `writable` | `false` | If `true`, the workspace is mounted read-write (subject to `writable_paths`). |
+| `writable` | inherited | If `true`, the workspace is mounted read-write. If unset, inherits from `workspace.writable`. |
 | `no_new_privileges` | `true` | Passes `--security-opt no-new-privileges`. |
 | `read_only_rootfs` | `false` | Passes `--read-only` to make the container filesystem read-only. |
 | `role` | none | `install` enables lockfile checks and `pre_run` in strict mode. |
 | `require_pinned_image` | `false` | Require `image.digest` for this profile. |
 | `lockfile_files` | `[]` | Files to check for presence when `role: install` and strict mode is on. |
 | `pre_run` | `[]` | Shell commands run on the **host** before the sandbox. If any fails, execution is aborted. |
-| `cap_drop` | `[]` | Linux capabilities to drop from the container. |
+| `capabilities` | none | Linux capabilities. Accepts three forms: `"drop-all"` (string), `["CAP_NET_ADMIN"]` (list treated as cap_add), or `{ drop: [...], add: [...] }` (structured, preferred). |
 | `ports` | `[]` | Port mappings in `host:container` format. Only with `network: on`. |
 | `writable_paths` | inherited | When set, overrides `workspace.writable_paths` for this profile only. Use this to give different profiles different write access (e.g. install writes lockfile, build writes dist). |
 

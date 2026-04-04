@@ -8,6 +8,17 @@ use crate::resolve::{
     ExecutionPlan, ResolvedImageSource, ResolvedMount, ResolvedSecret, ResolvedUser,
 };
 
+/// Cloud metadata service hostnames blocked when `network_allow` is active.
+/// These resolve to 192.0.2.1 (non-routable) inside the container.
+/// Does NOT block hardcoded-IP connections (e.g. direct TCP to 169.254.169.254).
+const CLOUD_METADATA_HOSTNAMES: &[&str] = &[
+    "metadata.google.internal",       // GCP
+    "metadata.internal",              // GCP alias
+    "instance-data.ec2.internal",     // AWS
+    "169.254.169.254",                // hostname-style lookup (not the raw IP)
+    "100.100.100.200",                // Alibaba Cloud
+];
+
 #[derive(Debug, Clone)]
 pub(crate) enum SignatureVerificationSupport {
     Available { policy: PathBuf },
@@ -593,6 +604,13 @@ fn append_container_settings(
         for (hostname, ip) in &plan.policy.network_allow {
             args.push("--add-host".to_string());
             args.push(format!("{hostname}:{ip}"));
+        }
+        // Block cloud metadata service hostnames (DNS-based protection only).
+        // NOTE: scripts connecting directly to 169.254.169.254 by IP bypass this;
+        // full IP-level blocking requires host-level firewall rules outside of rootless Podman.
+        for hostname in CLOUD_METADATA_HOSTNAMES {
+            args.push("--add-host".to_string());
+            args.push(format!("{hostname}:192.0.2.1"));
         }
     }
 

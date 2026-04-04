@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::error::SboxError;
 
 use super::model::Config;
-use super::validate::validate_config;
+use super::validate::{emit_config_warnings, validate_config};
 
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
@@ -49,6 +49,7 @@ pub fn load_config(options: &LoadOptions) -> Result<LoadedConfig, SboxError> {
 
     super::package_manager::elaborate(&mut config)?;
     validate_config(&config)?;
+    emit_config_warnings(&config);
 
     let config_dir = config_path
         .parent()
@@ -94,6 +95,15 @@ fn find_default_config_path(start: &Path) -> Result<PathBuf, SboxError> {
         let candidate = directory.join("sbox.yaml");
         if candidate.exists() {
             return Ok(candidate);
+        }
+    }
+
+    // Global fallback: ~/.config/sbox/sbox.yaml
+    // Allows users to set a personal "always sandbox" policy for projects that haven't opted in.
+    if let Some(home) = std::env::var_os("HOME") {
+        let global = PathBuf::from(home).join(".config/sbox/sbox.yaml");
+        if global.exists() {
+            return Ok(global);
         }
     }
 

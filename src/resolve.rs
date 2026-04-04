@@ -229,7 +229,7 @@ pub fn resolve_execution_plan(
         policy.writable,
     );
     let caches = resolve_caches(&config.caches);
-    let secrets = resolve_secrets(&config.secrets, &profile_resolution.name);
+    let secrets = resolve_secrets(&config.secrets, &profile_resolution.name, profile.role.as_ref());
     let rootless = config
         .runtime
         .as_ref()
@@ -1026,15 +1026,27 @@ fn resolve_caches(caches: &[CacheConfig]) -> Vec<ResolvedCache> {
         .collect()
 }
 
-fn resolve_secrets(secrets: &[SecretConfig], active_profile: &str) -> Vec<ResolvedSecret> {
+fn resolve_secrets(
+    secrets: &[SecretConfig],
+    active_profile: &str,
+    active_role: Option<&ProfileRole>,
+) -> Vec<ResolvedSecret> {
     secrets
         .iter()
         .filter(|secret| {
-            secret.when_profiles.is_empty()
+            // when_profiles: include only if empty or profile name matches
+            let profile_ok = secret.when_profiles.is_empty()
                 || secret
                     .when_profiles
                     .iter()
-                    .any(|profile| profile == active_profile)
+                    .any(|p| p == active_profile);
+
+            // deny_roles: exclude if the active profile's role is in the deny list
+            let role_ok = active_role
+                .map(|role| !secret.deny_roles.contains(role))
+                .unwrap_or(true);
+
+            profile_ok && role_ok
         })
         .map(|secret| ResolvedSecret {
             name: secret.name.clone(),

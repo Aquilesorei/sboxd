@@ -127,7 +127,7 @@ sbox relies on Linux namespaces for isolation. A kernel vulnerability that allow
 
 ## Adversarial test results
 
-The `tests/adversarial/` directory contains a test harness that runs a real malicious npm package inside a sandbox and verifies each attack pattern was blocked.
+The `tests/adversarial/` directory contains a shell-based test harness that runs a real malicious npm package inside a sandbox and verifies each attack pattern was blocked. It requires a live rootless Podman setup — run it with `bash tests/adversarial/run.sh`. Sample output:
 
 ```
 ── Credential reads ─────────────────────────────────────────────────

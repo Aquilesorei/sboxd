@@ -277,6 +277,64 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
     }
 }
 
+/// Emit non-fatal warnings to stderr after config is validated.
+/// Called from load_config after validate_config succeeds.
+pub fn emit_config_warnings(config: &Config) {
+    // Warn on :latest or untagged image references.
+    let check_ref = |reference: &str| {
+        if reference.ends_with(":latest") {
+            eprintln!(
+                "sbox warning: image `{reference}` uses `:latest` — consider pinning to a \
+                 specific version or digest for reproducibility and supply-chain safety"
+            );
+        }
+    };
+    if let Some(image) = &config.image {
+        if let Some(r) = &image.reference {
+            check_ref(r);
+        }
+    }
+    for (_name, profile) in &config.profiles {
+        if let Some(image) = &profile.image {
+            if let Some(r) = &image.reference {
+                check_ref(r);
+            }
+        }
+    }
+
+    // Warn when credential-looking secrets are not restricted from install profiles.
+    let has_install_profile = config
+        .profiles
+        .values()
+        .any(|p| p.role == Some(crate::config::model::ProfileRole::Install));
+
+    if has_install_profile {
+        for secret in &config.secrets {
+            if looks_like_credential(&secret.source)
+                && secret.deny_roles.is_empty()
+                && secret.when_profiles.is_empty()
+            {
+                eprintln!(
+                    "sbox warning: secret `{}` (source: {}) is not restricted from install \
+                     profiles — postinstall scripts can read it. \
+                     Add `deny_roles: [install]` to block it from install-phase containers.",
+                    secret.name, secret.source
+                );
+            }
+        }
+    }
+}
+
+fn looks_like_credential(path: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "npmrc", "netrc", "pypirc", "token", "secret", "credential",
+        "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+        ".aws/", ".ssh/", "auth.json",
+    ];
+    let lower = path.to_lowercase();
+    PATTERNS.iter().any(|p| lower.contains(p))
+}
+
 fn validate_image(image: &ImageConfig, errors: &mut Vec<String>) {
     let source_count =
         image.reference.iter().count() + image.build.iter().count() + image.preset.iter().count();

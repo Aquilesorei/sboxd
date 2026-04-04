@@ -98,7 +98,7 @@ fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError
         ("npm",    "node:22-bookworm-slim"),
         ("yarn",   "node:22-bookworm-slim"),
         ("pnpm",   "node:22-bookworm-slim"),
-        ("bun",    "oven/bun:latest"),
+        ("bun",    "oven/bun:1"),
         ("uv",     "python:3.13-slim"),
         ("pip",    "python:3.13-slim"),
         ("poetry", "python:3.13-slim"),

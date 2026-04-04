@@ -167,8 +167,16 @@ pub struct SecretConfig {
     pub source: String,
     pub target: String,
 
+    /// Include this secret only when the active profile matches one of these names.
+    /// Empty means "include in all profiles".
     #[serde(default)]
     pub when_profiles: Vec<String>,
+
+    /// Exclude this secret when the active profile has one of these roles.
+    /// Use `deny_roles: [install]` to prevent credential files from being mounted
+    /// inside install-phase containers where postinstall scripts could read them.
+    #[serde(default)]
+    pub deny_roles: Vec<ProfileRole>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
