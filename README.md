@@ -387,3 +387,7 @@ cp examples/fedora-podman-signature-policy/registries.d/example.yaml ~/.config/c
 ```
 
 Replace the placeholder registry scope, GPG key path, and lookaside URL with real values, then run `sbox doctor` to verify.
+
+## Contact
+
+Achille Zongo — achillezongo07@gmail.com
