@@ -2,3 +2,4 @@
 diffs/
 .idea/
 .junie/
+/examples/compose-app/node_modules/

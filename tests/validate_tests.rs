@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use sbox::config::model::{
     BackendKind, CacheConfig, CapabilitiesSpec, Config, DispatchRule, EnvironmentConfig,
     ExecutionMode, IdentityConfig, ImageConfig, MountConfig, MountType, ProfileConfig,
-    RuntimeConfig, WorkspaceConfig,
+    ProfileRole, RuntimeConfig, SecretConfig, WorkspaceConfig,
 };
-use sbox::config::validate::validate_config;
+use sbox::config::validate::{collect_config_warnings, validate_config};
 
 fn base_config() -> Config {
     let mut profiles = IndexMap::new();
@@ -710,4 +710,192 @@ fn accepts_valid_exclude_paths() {
     });
 
     validate_config(&config).expect("valid exclude_paths should be accepted");
+}
+
+// ── collect_config_warnings ──────────────────────────────────────────────────
+
+#[test]
+fn warns_on_latest_image_reference() {
+    let mut config = base_config();
+    config.image = Some(ImageConfig {
+        reference: Some("node:latest".to_string()),
+        build: None,
+        preset: None,
+        digest: None,
+        verify_signature: None,
+        pull_policy: None,
+        tag: None,
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains(":latest")),
+        "expected :latest warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn no_warning_for_pinned_image_reference() {
+    let mut config = base_config();
+    config.image = Some(ImageConfig {
+        reference: Some("node:22-bookworm-slim".to_string()),
+        build: None,
+        preset: None,
+        digest: None,
+        verify_signature: None,
+        pull_policy: None,
+        tag: None,
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        !warnings.iter().any(|w| w.contains(":latest")),
+        "unexpected :latest warning for pinned image: {warnings:?}"
+    );
+}
+
+#[test]
+fn warns_on_install_profile_with_network_on_and_no_network_allow() {
+    let mut config = base_config();
+    config.profiles.insert(
+        "install".to_string(),
+        ProfileConfig {
+            mode: ExecutionMode::Sandbox,
+            image: None,
+            network: Some("on".to_string()),
+            writable: Some(true),
+            require_pinned_image: None,
+            require_lockfile: None,
+            role: Some(ProfileRole::Install),
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: Vec::new(), // empty — no restriction
+            ports: Vec::new(),
+            capabilities: None,
+            no_new_privileges: Some(true),
+            read_only_rootfs: None,
+            reuse_container: None,
+            shell: None,
+            writable_paths: None,
+        },
+    );
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("unrestricted internet")),
+        "expected unrestricted internet warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn no_warning_for_install_profile_with_network_allow() {
+    let mut config = base_config();
+    config.profiles.insert(
+        "install".to_string(),
+        ProfileConfig {
+            mode: ExecutionMode::Sandbox,
+            image: None,
+            network: Some("on".to_string()),
+            writable: Some(true),
+            require_pinned_image: None,
+            require_lockfile: None,
+            role: Some(ProfileRole::Install),
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: vec!["registry.npmjs.org".to_string()],
+            ports: Vec::new(),
+            capabilities: None,
+            no_new_privileges: Some(true),
+            read_only_rootfs: None,
+            reuse_container: None,
+            shell: None,
+            writable_paths: None,
+        },
+    );
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        !warnings.iter().any(|w| w.contains("unrestricted internet")),
+        "unexpected internet warning when network_allow is set: {warnings:?}"
+    );
+}
+
+#[test]
+fn warns_on_credential_secret_not_restricted_from_install_profiles() {
+    let mut config = base_config();
+    config.profiles.insert(
+        "install".to_string(),
+        ProfileConfig {
+            mode: ExecutionMode::Sandbox,
+            image: None,
+            network: Some("on".to_string()),
+            writable: Some(true),
+            require_pinned_image: None,
+            require_lockfile: None,
+            role: Some(ProfileRole::Install),
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: vec!["registry.npmjs.org".to_string()],
+            ports: Vec::new(),
+            capabilities: None,
+            no_new_privileges: Some(true),
+            read_only_rootfs: None,
+            reuse_container: None,
+            shell: None,
+            writable_paths: None,
+        },
+    );
+    config.secrets.push(SecretConfig {
+        name: "npm_token".to_string(),
+        source: "/home/user/.npmrc".to_string(),
+        target: "/run/secrets/npm_token".to_string(),
+        when_profiles: vec![], // not restricted to any profile
+        deny_roles: vec![],    // not denied from install role
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("not restricted from install profiles")),
+        "expected credential secret warning, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn no_warning_for_credential_secret_with_deny_roles() {
+    let mut config = base_config();
+    config.profiles.insert(
+        "install".to_string(),
+        ProfileConfig {
+            mode: ExecutionMode::Sandbox,
+            image: None,
+            network: Some("on".to_string()),
+            writable: Some(true),
+            require_pinned_image: None,
+            require_lockfile: None,
+            role: Some(ProfileRole::Install),
+            lockfile_files: Vec::new(),
+            pre_run: Vec::new(),
+            network_allow: vec!["registry.npmjs.org".to_string()],
+            ports: Vec::new(),
+            capabilities: None,
+            no_new_privileges: Some(true),
+            read_only_rootfs: None,
+            reuse_container: None,
+            shell: None,
+            writable_paths: None,
+        },
+    );
+    config.secrets.push(SecretConfig {
+        name: "npm_token".to_string(),
+        source: "/home/user/.npmrc".to_string(),
+        target: "/run/secrets/npm_token".to_string(),
+        when_profiles: vec![],
+        deny_roles: vec![ProfileRole::Install], // explicitly blocked from install
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        !warnings.iter().any(|w| w.contains("not restricted from install profiles")),
+        "unexpected warning when secret has deny_roles: {warnings:?}"
+    );
 }

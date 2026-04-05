@@ -277,28 +277,45 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
     }
 }
 
-/// Emit non-fatal warnings to stderr after config is validated.
-/// Called from load_config after validate_config succeeds.
-pub fn emit_config_warnings(config: &Config) {
-    // Warn on :latest or untagged image references.
-    let check_ref = |reference: &str| {
+/// Collect non-fatal warnings for the config.
+/// Returns a Vec so callers can test the warnings without capturing stderr.
+pub fn collect_config_warnings(config: &Config) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    // Warn on :latest image references.
+    let check_ref = |reference: &str, warnings: &mut Vec<String>| {
         if reference.ends_with(":latest") {
-            eprintln!(
-                "sbox warning: image `{reference}` uses `:latest` — consider pinning to a \
-                 specific version or digest for reproducibility and supply-chain safety"
-            );
+            warnings.push(format!(
+                "image `{reference}` uses `:latest` — consider pinning to a specific version \
+                 or digest for reproducibility and supply-chain safety"
+            ));
         }
     };
     if let Some(image) = &config.image {
         if let Some(r) = &image.reference {
-            check_ref(r);
+            check_ref(r, &mut warnings);
         }
     }
     for (_name, profile) in &config.profiles {
         if let Some(image) = &profile.image {
             if let Some(r) = &image.reference {
-                check_ref(r);
+                check_ref(r, &mut warnings);
             }
+        }
+    }
+
+    // Warn when an install profile uses network: on without network_allow.
+    // This gives postinstall scripts unrestricted internet access.
+    for (name, profile) in &config.profiles {
+        if profile.role == Some(crate::config::model::ProfileRole::Install)
+            && profile.network.as_deref() == Some("on")
+            && profile.network_allow.is_empty()
+        {
+            warnings.push(format!(
+                "install profile `{name}` uses `network: on` without `network_allow` — \
+                 postinstall scripts have unrestricted internet access. \
+                 Add `network_allow` to restrict outbound connections to registry hostnames only."
+            ));
         }
     }
 
@@ -314,14 +331,23 @@ pub fn emit_config_warnings(config: &Config) {
                 && secret.deny_roles.is_empty()
                 && secret.when_profiles.is_empty()
             {
-                eprintln!(
-                    "sbox warning: secret `{}` (source: {}) is not restricted from install \
-                     profiles — postinstall scripts can read it. \
+                warnings.push(format!(
+                    "secret `{}` (source: {}) is not restricted from install profiles — \
+                     postinstall scripts can read it. \
                      Add `deny_roles: [install]` to block it from install-phase containers.",
                     secret.name, secret.source
-                );
+                ));
             }
         }
+    }
+
+    warnings
+}
+
+/// Print collected warnings to stderr. Called from load_config after validate_config succeeds.
+pub fn emit_config_warnings(config: &Config) {
+    for warning in collect_config_warnings(config) {
+        eprintln!("sbox warning: {warning}");
     }
 }
 

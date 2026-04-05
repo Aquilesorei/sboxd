@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
@@ -84,7 +84,58 @@ fn execute_interactive(cli: &Cli, command: &InitCommand) -> Result<ExitCode, Sbo
     Ok(ExitCode::SUCCESS)
 }
 
+fn detect_dockerfile(cwd: &Path) -> Option<String> {
+    for name in &["Dockerfile", "Dockerfile.dev", "Dockerfile.local", "dockerfile"] {
+        if cwd.join(name).exists() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Well-known infrastructure/sidecar image name fragments to skip when scanning compose files.
+/// We want the application service image, not postgres/redis/etc.
+const COMPOSE_SIDECAR_PREFIXES: &[&str] = &[
+    "postgres", "mysql", "mariadb", "mongo", "redis", "rabbitmq",
+    "elasticsearch", "kibana", "grafana", "prometheus", "influxdb",
+    "nginx", "traefik", "caddy", "haproxy",
+    "zookeeper", "kafka", "memcached", "vault",
+];
+
+fn detect_compose_image(cwd: &Path) -> Option<String> {
+    for name in &["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"] {
+        let path = cwd.join(name);
+        if !path.exists() { continue; }
+        // Extract image values from the compose file — fast heuristic, no full YAML parse.
+        // Skip well-known infrastructure images (databases, caches, proxies) to avoid
+        // suggesting `postgres:16` as the app image when the db service appears first.
+        if let Ok(text) = fs::read_to_string(&path) {
+            for line in text.lines() {
+                let t = line.trim();
+                if let Some(rest) = t.strip_prefix("image:") {
+                    let img = rest.trim().trim_matches('"').trim_matches('\'');
+                    if img.is_empty() { continue; }
+                    let img_lower = img.to_lowercase();
+                    let is_sidecar = COMPOSE_SIDECAR_PREFIXES
+                        .iter()
+                        .any(|p| img_lower.starts_with(p));
+                    if !is_sidecar {
+                        return Some(img.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError> {
+    let cwd = std::env::current_dir().map_err(|source| SboxError::CurrentDirectory { source })?;
+
+    // ── Detect existing Docker infrastructure ─────────────────────────────────
+    let found_dockerfile = detect_dockerfile(&cwd);
+    let found_compose_image = detect_compose_image(&cwd);
+
     // ── Package manager ───────────────────────────────────────────────────────
     let pm_idx = Select::with_theme(theme)
         .with_prompt("Package manager")
@@ -94,26 +145,51 @@ fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError
         .map_err(|_| SboxError::CurrentDirectory {
             source: std::io::Error::other("prompt cancelled"),
         })?;
-    let (pm_name, default_image) = [
+    let (pm_name, stock_image) = [
         ("npm",    "node:22-bookworm-slim"),
         ("yarn",   "node:22-bookworm-slim"),
         ("pnpm",   "node:22-bookworm-slim"),
         ("bun",    "oven/bun:1"),
-        ("uv",     "python:3.13-slim"),
+        ("uv",     "ghcr.io/astral-sh/uv:python3.13-bookworm-slim"),
         ("pip",    "python:3.13-slim"),
         ("poetry", "python:3.13-slim"),
         ("cargo",  "rust:1-bookworm"),
         ("go",     "golang:1.23-bookworm"),
     ][pm_idx];
 
-    // ── Image ─────────────────────────────────────────────────────────────────
-    let image: String = Input::with_theme(theme)
-        .with_prompt("Container image")
-        .default(default_image.to_string())
-        .interact_text()
-        .map_err(|_| SboxError::CurrentDirectory {
-            source: std::io::Error::other("prompt cancelled"),
-        })?;
+    // ── Image — prefer existing Docker infrastructure over stock public images ─
+    let image_block: String = if let Some(ref dockerfile) = found_dockerfile {
+        let use_it = Confirm::with_theme(theme)
+            .with_prompt(format!("Found `{dockerfile}` — use it as the container image?"))
+            .default(true)
+            .interact()
+            .map_err(|_| SboxError::CurrentDirectory {
+                source: std::io::Error::other("prompt cancelled"),
+            })?;
+        if use_it {
+            format!("image:\n  build: {dockerfile}\n")
+        } else {
+            let img = prompt_image(theme, stock_image)?;
+            format!("image:\n  ref: {img}\n")
+        }
+    } else if let Some(ref compose_image) = found_compose_image {
+        let use_it = Confirm::with_theme(theme)
+            .with_prompt(format!("Found image `{compose_image}` in compose file — use it?"))
+            .default(true)
+            .interact()
+            .map_err(|_| SboxError::CurrentDirectory {
+                source: std::io::Error::other("prompt cancelled"),
+            })?;
+        if use_it {
+            format!("image:\n  ref: {compose_image}\n")
+        } else {
+            let img = prompt_image(theme, stock_image)?;
+            format!("image:\n  ref: {img}\n")
+        }
+    } else {
+        let img = prompt_image(theme, stock_image)?;
+        format!("image:\n  ref: {img}\n")
+    };
 
     // ── Backend ───────────────────────────────────────────────────────────────
     let backend_idx = Select::with_theme(theme)
@@ -133,26 +209,32 @@ fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError
     let exclude_paths = default_exclude_paths(pm_name);
 
     Ok(format!(
-        "version: 1\n\
-         \n\
-         {runtime_block}\
-         \n\
-         workspace:\n\
-           mount: /workspace\n\
-           writable: false\n\
-           exclude_paths:\n\
-         {exclude_paths}\
-         \n\
-         image:\n\
-           ref: {image}\n\
-         \n\
-         environment:\n\
-           pass_through:\n\
-             - TERM\n\
-         \n\
-         package_manager:\n\
-           name: {pm_name}\n"
-    ))
+"version: 1
+
+{runtime_block}
+workspace:
+  mount: /workspace
+  writable: false
+  exclude_paths:
+{exclude_paths}
+{image_block}
+environment:
+  pass_through:
+    - TERM
+
+package_manager:
+  name: {pm_name}
+"))
+}
+
+fn prompt_image(theme: &ColorfulTheme, default: &str) -> Result<String, SboxError> {
+    Input::with_theme(theme)
+        .with_prompt("Container image")
+        .default(default.to_string())
+        .interact_text()
+        .map_err(|_| SboxError::CurrentDirectory {
+            source: std::io::Error::other("prompt cancelled"),
+        })
 }
 
 fn default_exclude_paths(pm_name: &str) -> String {
@@ -183,6 +265,10 @@ fn default_exclude_paths(pm_name: &str) -> String {
 }
 
 fn execute_interactive_advanced(theme: &ColorfulTheme) -> Result<String, SboxError> {
+    let cwd = std::env::current_dir().map_err(|source| SboxError::CurrentDirectory { source })?;
+    let found_dockerfile = detect_dockerfile(&cwd);
+    let found_compose_image = detect_compose_image(&cwd);
+
     // ── Backend ───────────────────────────────────────────────────────────────
     let backend_idx = Select::with_theme(theme)
         .with_prompt("Container backend")
@@ -199,32 +285,53 @@ fn execute_interactive_advanced(theme: &ColorfulTheme) -> Result<String, SboxErr
     };
 
     // ── Preset / image ────────────────────────────────────────────────────────
-    let preset_idx = Select::with_theme(theme)
-        .with_prompt("Language / ecosystem")
-        .items(&["node", "python", "rust", "go", "generic", "custom image"])
+    // Build the ecosystem list, prepending detected local infrastructure.
+    let mut image_choices: Vec<String> = Vec::new();
+    if let Some(ref df) = found_dockerfile {
+        image_choices.push(format!("existing Dockerfile ({df})"));
+    }
+    if let Some(ref img) = found_compose_image {
+        image_choices.push(format!("image from compose ({img})"));
+    }
+    image_choices.extend_from_slice(&[
+        "node".into(), "python".into(), "rust".into(), "go".into(),
+        "generic".into(), "custom image".into(),
+    ]);
+
+    let image_idx = Select::with_theme(theme)
+        .with_prompt("Container image source")
+        .items(&image_choices)
         .default(0)
         .interact()
         .map_err(|_| SboxError::CurrentDirectory {
             source: std::io::Error::other("prompt cancelled"),
         })?;
 
-    let preset = ["node", "python", "rust", "go", "generic", "custom"][preset_idx];
+    // Resolve offset caused by prepended Dockerfile/compose choices.
+    let offset = (found_dockerfile.is_some() as usize) + (found_compose_image.is_some() as usize);
+    let ecosystem_names = ["node", "python", "rust", "go", "generic", "custom"];
 
-    let (default_image, default_writable_paths, default_dispatch) = match preset {
-        "node"   => ("node:22-bookworm-slim", vec!["node_modules", "package-lock.json", "dist"], node_dispatch()),
-        "python" => ("python:3.13-slim",       vec![".venv"],                                   python_dispatch()),
-        "rust"   => ("rust:1-bookworm",         vec!["target"],                                  rust_dispatch()),
-        "go"     => ("golang:1.23-bookworm",    vec![],                                          go_dispatch()),
-        _        => ("ubuntu:24.04",            vec![],                                          String::new()),
-    };
-
-    let image: String = Input::with_theme(theme)
-        .with_prompt("Container image")
-        .default(default_image.to_string())
-        .interact_text()
-        .map_err(|_| SboxError::CurrentDirectory {
-            source: std::io::Error::other("prompt cancelled"),
-        })?;
+    let (image_yaml, preset, default_writable_paths, default_dispatch) =
+        if found_dockerfile.is_some() && image_idx == 0 {
+            let df = found_dockerfile.as_deref().unwrap();
+            (format!("image:\n  build: {df}"), "custom", vec![], String::new())
+        } else if found_compose_image.is_some()
+            && image_idx == (found_dockerfile.is_some() as usize)
+        {
+            let img = found_compose_image.as_deref().unwrap();
+            (format!("image:\n  ref: {img}"), "custom", vec![], String::new())
+        } else {
+            let preset = ecosystem_names[image_idx - offset];
+            let (default_image, writable, dispatch) = match preset {
+                "node"   => ("node:22-bookworm-slim", vec!["node_modules", "package-lock.json", "dist"], node_dispatch()),
+                "python" => ("python:3.13-slim",       vec![".venv"],                                   python_dispatch()),
+                "rust"   => ("rust:1-bookworm",         vec!["target"],                                  rust_dispatch()),
+                "go"     => ("golang:1.23-bookworm",    vec![],                                          go_dispatch()),
+                _        => ("ubuntu:24.04",            vec![],                                          String::new()),
+            };
+            let img = prompt_image(theme, default_image)?;
+            (format!("image:\n  ref: {img}"), preset, writable, dispatch)
+        };
 
     // ── Network ───────────────────────────────────────────────────────────────
     let network_idx = Select::with_theme(theme)
@@ -311,8 +418,7 @@ workspace:
     - \".ssh/*\"
     - \".aws/*\"
 
-image:
-  ref: {image}
+{image_yaml}
 
 environment:
   pass_through:
@@ -413,7 +519,7 @@ workspace:
     - \".aws/*\"
 
 image:
-  ref: python:3.13-slim
+  ref: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 environment:
   pass_through:
@@ -526,7 +632,7 @@ mod tests {
     #[test]
     fn renders_python_template_with_package_manager() {
         let rendered = render_template("python").expect("python preset should exist");
-        assert!(rendered.contains("ref: python:3.13-slim"));
+        assert!(rendered.contains("ghcr.io/astral-sh/uv:python3.13-bookworm-slim"));
         assert!(rendered.contains("name: uv"));
     }
 

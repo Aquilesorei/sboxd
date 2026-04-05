@@ -1,0 +1,10 @@
+version: 1
+
+# Minimal preset config — image, workspace, and profiles are auto-filled by the preset.
+# Only the backend needs to be set explicitly; everything else is inferred.
+runtime:
+  backend: podman
+  rootless: true
+
+package_manager:
+  name: npm

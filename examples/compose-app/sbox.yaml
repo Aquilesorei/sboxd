@@ -1,0 +1,13 @@
+version: 1
+
+# Image detected from docker-compose.yml — same image docker-compose uses for the app service.
+# `sbox init --interactive` generates this automatically when it finds a compose file.
+runtime:
+  backend: docker
+  rootless: false
+
+image:
+  ref: node:22-bookworm-slim
+
+package_manager:
+  name: npm

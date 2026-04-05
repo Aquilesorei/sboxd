@@ -60,7 +60,17 @@ fn bootstrap_command_for(pm_name: &str) -> Result<Vec<String>, SboxError> {
         "pnpm"   => &["pnpm",   "install", "--ignore-scripts"],
         "bun"    => &["bun",    "install", "--no-scripts"],
         "uv"     => &["uv",     "lock"],
-        "pip"    => &["pip",    "install", "-r", "requirements.txt"],
+        "pip"    => {
+            // pip has no lockfile-only mode. Direct users to pip-compile (pip-tools) or uv.
+            return Err(SboxError::ConfigValidation {
+                message: "pip does not support lockfile-only bootstrap.\n\
+                          To generate a pinned requirements.txt safely:\n\
+                            pip-compile requirements.in           (install pip-tools first)\n\
+                            uv pip compile requirements.in -o requirements.txt\n\
+                          Or switch to the `uv` preset which supports `sbox bootstrap` natively."
+                    .to_string(),
+            });
+        }
         "poetry" => &["poetry", "lock"],
         "cargo"  => &["cargo",  "fetch"],
         "go"     => &["go",     "mod", "download"],

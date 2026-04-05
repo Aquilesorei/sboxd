@@ -3,6 +3,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::backend::podman::CLOUD_METADATA_HOSTNAMES;
+
 use crate::error::SboxError;
 use crate::resolve::{ExecutionPlan, ResolvedImageSource, ResolvedMount, ResolvedSecret, ResolvedUser};
 
@@ -158,6 +160,13 @@ pub fn build_run_args_with_options(
         for (hostname, ip) in &plan.policy.network_allow {
             args.push("--add-host".to_string());
             args.push(format!("{hostname}:{ip}"));
+        }
+    }
+
+    if plan.policy.network != "off" {
+        for hostname in CLOUD_METADATA_HOSTNAMES {
+            args.push("--add-host".to_string());
+            args.push(format!("{hostname}:192.0.2.1"));
         }
     }
 
@@ -548,6 +557,20 @@ fn validate_mount_source(mount: &ResolvedMount) -> Result<(), SboxError> {
     }
 
     if mount.create {
+        // If the path looks like a file (has an extension), create an empty file.
+        // Otherwise create a directory (e.g. node_modules, .cache).
+        // Docker bind-mounts a missing source as a directory by default, which
+        // corrupts lockfiles like package-lock.json on first install.
+        if source.extension().is_some() {
+            if let Some(parent) = source.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            return fs::write(source, b"").map_err(|_| SboxError::HostPathNotFound {
+                kind: "mount source",
+                name: mount.target.clone(),
+                path: source.clone(),
+            });
+        }
         return fs::create_dir_all(source).map_err(|_| SboxError::HostPathNotFound {
             kind: "mount source",
             name: mount.target.clone(),
@@ -838,5 +861,84 @@ mod tests {
         // In a normal test environment we won't be root
         // Just verify the function runs without panic and returns plausible values
         assert!(uid < 100_000);
+    }
+
+    #[test]
+    fn metadata_hostnames_blocked_when_network_is_on() {
+        let mut plan = sample_plan();
+        plan.policy.network = "on".into();
+        let args = build_run_args(&plan, "node:22").expect("args should build");
+        let joined = args.join(" ");
+        // Every cloud metadata hostname must be sinkholes to 192.0.2.1
+        for hostname in crate::backend::podman::CLOUD_METADATA_HOSTNAMES {
+            assert!(
+                joined.contains(&format!("--add-host {hostname}:192.0.2.1")),
+                "expected metadata host {hostname} to be blocked, args: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_hostnames_not_added_when_network_is_off() {
+        let plan = sample_plan(); // network: off by default
+        let args = build_run_args(&plan, "node:22").expect("args should build");
+        let joined = args.join(" ");
+        // With network off there is no point adding --add-host entries
+        assert!(
+            !joined.contains("metadata.google.internal"),
+            "metadata host should not appear when network is off, args: {joined}"
+        );
+    }
+
+    #[test]
+    fn network_allow_breaks_dns_and_injects_resolved_hosts() {
+        let mut plan = sample_plan();
+        plan.policy.network = "on".into();
+        plan.policy.network_allow = vec![
+            ("registry.npmjs.org".into(), "104.16.0.0".into()),
+        ];
+        let args = build_run_args(&plan, "node:22").expect("args should build");
+        let joined = args.join(" ");
+        // DNS must be broken to the black-hole address
+        assert!(
+            joined.contains("--dns 192.0.2.1"),
+            "expected DNS break when network_allow is set, args: {joined}"
+        );
+        // The resolved registry host must be injected
+        assert!(
+            joined.contains("--add-host registry.npmjs.org:104.16.0.0"),
+            "expected registry host injected via --add-host, args: {joined}"
+        );
+    }
+
+    #[test]
+    fn network_on_without_network_allow_still_blocks_metadata_hosts() {
+        // Even with unrestricted network (no allow-list), metadata hosts must be blocked.
+        let mut plan = sample_plan();
+        plan.policy.network = "on".into();
+        plan.policy.network_allow = vec![];
+        let args = build_run_args(&plan, "node:22").expect("args should build");
+        let joined = args.join(" ");
+        // No DNS break (no allow-list)
+        assert!(!joined.contains("--dns 192.0.2.1"), "DNS should not be broken without allow-list");
+        // But metadata hosts should still be blocked
+        assert!(
+            joined.contains("--add-host metadata.google.internal:192.0.2.1"),
+            "metadata host should be blocked even without network_allow, args: {joined}"
+        );
+    }
+
+    #[test]
+    fn denied_env_vars_not_passed_to_container() {
+        let mut plan = sample_plan();
+        plan.environment.denied = vec!["NPM_TOKEN".into(), "NODE_AUTH_TOKEN".into()];
+        plan.policy.network = "on".into();
+        let args = build_run_args(&plan, "node:22").expect("args should build");
+        let joined = args.join(" ");
+        // Denied vars must not appear as -e VAR=... or --env VAR=...
+        assert!(
+            !joined.contains("NPM_TOKEN"),
+            "denied env var NPM_TOKEN should not appear in docker args: {joined}"
+        );
     }
 }

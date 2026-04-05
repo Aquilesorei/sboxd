@@ -11,7 +11,7 @@ fn generic_preset_uses_ubuntu() {
 #[test]
 fn python_preset_uses_python_image() {
     let template = render_template("python").expect("python preset should exist");
-    assert!(template.contains("ref: python:3.13-slim"));
+    assert!(template.contains("ghcr.io/astral-sh/uv:python3.13-bookworm-slim"));
 }
 
 #[test]

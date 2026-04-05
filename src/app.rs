@@ -18,6 +18,7 @@ pub fn run(cli: Cli) -> Result<ExitCode, SboxError> {
         Commands::Clean(command) => crate::clean::execute(&cli, command),
         Commands::Shim(command) => crate::shim::execute(command),
         Commands::Bootstrap(_) => crate::bootstrap::execute(&cli),
+        Commands::Audit(command) => crate::audit::execute(&cli, command),
     }
 }
 

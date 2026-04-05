@@ -44,6 +44,10 @@ fn normalize_output(output: &str) -> String {
 
 fn assert_matches_fixture(actual: &str, fixture_name: &str) {
     let fixture_path = repo_root().join("tests/golden").join(fixture_name);
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        fs::write(&fixture_path, actual).expect("should write golden fixture");
+        return;
+    }
     let expected = fs::read_to_string(&fixture_path).expect("fixture should exist");
     assert_eq!(actual, expected, "golden output mismatch for {}", fixture_path.display());
 }
@@ -97,6 +101,13 @@ fn bun_install_plan_matches_golden_output() {
         ],
     );
     assert_matches_fixture(&normalize_output(&actual), "plan_bun_install.txt");
+}
+
+#[test]
+fn npm_preset_install_plan_matches_golden_output() {
+    let example_dir = repo_root().join("examples/npm-preset");
+    let actual = run_sbox(&example_dir, &["plan", "--", "npm", "install"]);
+    assert_matches_fixture(&normalize_output(&actual), "plan_npm_preset_install.txt");
 }
 
 #[test]

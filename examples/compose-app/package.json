@@ -1,0 +1,12 @@
+{
+  "name": "compose-app",
+  "version": "1.0.0",
+  "description": "Example Node.js app with docker-compose and sbox",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.3"
+  }
+}

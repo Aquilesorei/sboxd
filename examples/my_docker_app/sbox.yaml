@@ -1,0 +1,11 @@
+version: 1
+
+runtime:
+  backend: docker
+  rootless: false
+
+image:
+  build: Dockerfile
+
+package_manager:
+  name: uv

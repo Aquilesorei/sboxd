@@ -51,6 +51,7 @@ pub enum Commands {
     Clean(CleanCommand),
     Shim(ShimCommand),
     Bootstrap(BootstrapCommand),
+    Audit(AuditCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -136,6 +137,16 @@ pub enum CliBackendKind {
 pub enum CliExecutionMode {
     Host,
     Sandbox,
+}
+
+/// Scan the project's lockfile for known-malicious or vulnerable package versions.
+/// Delegates to the ecosystem's native audit tool (npm audit, cargo audit, etc.)
+/// and runs on the host (not in a sandbox) so it can reach advisory databases.
+#[derive(Debug, Clone, Args, Default)]
+pub struct AuditCommand {
+    /// Extra arguments forwarded to the underlying audit tool.
+    #[arg(num_args = 0.., allow_hyphen_values = true)]
+    pub extra_args: Vec<String>,
 }
 
 /// Generate the package lockfile inside the sandbox without running install scripts.

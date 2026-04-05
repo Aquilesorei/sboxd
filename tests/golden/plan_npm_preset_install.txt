@@ -1,0 +1,65 @@
+sbox plan
+phase: 2
+config: $ROOT/examples/npm-preset/sbox.yaml
+
+command: npm install
+argv:
+  - npm
+  - install
+
+audit:
+  install_style: true
+  strict_security: false
+  trusted_image_required: false
+  sensitive_pass_through: <none>
+  lockfile: required, missing (package-lock.json or npm-shrinkwrap.json)
+  pre_run: <none>
+
+resolution:
+  profile: pm-npm-install
+  profile source: package_manager preset `npm` (install) via pattern `npm install*`
+  mode: sandbox
+  mode source: profile
+
+runtime:
+  backend: podman
+  image: ref:node:22-bookworm-slim
+  image_trust: mutable-reference
+  verify_signature: not requested
+  user mapping: keep-id
+
+workspace:
+  root: $ROOT/examples/npm-preset
+  invocation cwd: $ROOT/examples/npm-preset
+  effective host dir: $ROOT/examples/npm-preset
+  mount: /workspace
+  sandbox cwd: /workspace
+  cwd mapping: mapped from invocation cwd
+
+policy:
+  network: on
+  network_allow: [resolved] registry.npmjs.org
+  writable: false
+  no_new_privileges: true
+  read_only_rootfs: false
+  reuse_container: false
+  reusable_session: <none>
+  cap_drop: <none>
+  cap_add: <none>
+  ports: <none>
+  pull_policy: <default>
+
+environment:
+  selected: <none>
+  denied: NPM_TOKEN, NODE_AUTH_TOKEN, NPM_AUTH_TOKEN
+
+mounts:
+  - bind $ROOT/examples/npm-preset -> /workspace (ro, workspace)
+  - bind $ROOT/examples/npm-preset/node_modules -> /workspace/node_modules (rw, workspace)
+  - bind $ROOT/examples/npm-preset/package-lock.json -> /workspace/package-lock.json (rw, workspace)
+
+caches:
+  <none>
+
+secrets:
+  <none>
