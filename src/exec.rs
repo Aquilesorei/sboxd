@@ -3,10 +3,36 @@ use std::process::{Command, ExitCode, Stdio};
 use crate::cli::{Cli, ExecCommand, RunCommand};
 use crate::config::{LoadOptions, load_config};
 use crate::error::SboxError;
-use crate::resolve::{ExecutionPlan, ResolutionTarget, resolve_execution_plan};
+use crate::resolve::{
+    EnvVarSource, ExecutionPlan, ResolutionTarget, ResolvedEnvVar, resolve_execution_plan,
+};
 
 pub fn execute_run(cli: &Cli, command: &RunCommand) -> Result<ExitCode, SboxError> {
-    execute(cli, ResolutionTarget::Run, &command.command)
+    let loaded = load_config(&LoadOptions {
+        workspace: cli.workspace.clone(),
+        config: cli.config.clone(),
+    })?;
+    let mut plan = resolve_execution_plan(cli, &loaded, ResolutionTarget::Run, &command.command)?;
+
+    apply_env_overrides(&mut plan, &command.env)?;
+
+    if command.dry_run {
+        print!(
+            "{}",
+            crate::plan::render_plan(
+                &loaded.config_path,
+                &plan,
+                strict_security_enabled(cli, &loaded.config),
+                true,
+                false
+            )
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    validate_execution_safety(&plan, strict_security_enabled(cli, &loaded.config))?;
+    run_pre_run_commands(&plan)?;
+    execute_plan(&plan)
 }
 
 pub fn execute_exec(cli: &Cli, command: &ExecCommand) -> Result<ExitCode, SboxError> {
@@ -33,6 +59,44 @@ fn execute(
     run_pre_run_commands(&plan)?;
 
     execute_plan(&plan)
+}
+
+fn apply_env_overrides(plan: &mut ExecutionPlan, overrides: &[String]) -> Result<(), SboxError> {
+    for entry in overrides {
+        let (name, value) = entry
+            .split_once('=')
+            .ok_or_else(|| SboxError::ConfigValidation {
+                message: format!("-e `{entry}` must be in NAME=VALUE format"),
+            })?;
+        if !is_valid_env_name(name) {
+            return Err(SboxError::ConfigValidation {
+                message: format!(
+                    "-e `{entry}`: `{name}` is not a valid environment variable name \
+                     (must be non-empty, start with a letter or underscore, and contain \
+                     only letters, digits, or underscores)"
+                ),
+            });
+        }
+        // Remove any existing entry with the same name so the override wins
+        plan.environment.variables.retain(|v| v.name != name);
+        plan.environment.variables.push(ResolvedEnvVar {
+            name: name.to_string(),
+            value: value.to_string(),
+            source: EnvVarSource::Set,
+        });
+    }
+    Ok(())
+}
+
+fn is_valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => false,
+        Some(first) => {
+            (first.is_ascii_alphabetic() || first == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+    }
 }
 
 fn execute_plan(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
@@ -193,7 +257,10 @@ pub(crate) fn strict_security_enabled(cli: &Cli, config: &crate::config::model::
 
 #[cfg(test)]
 mod tests {
-    use super::{strict_security_enabled, trusted_image_required, validate_execution_safety};
+    use super::{
+        apply_env_overrides, is_valid_env_name, strict_security_enabled, trusted_image_required,
+        validate_execution_safety,
+    };
     use crate::config::model::ExecutionMode;
     use crate::resolve::{
         CwdMapping, EnvVarSource, ExecutionAudit, ExecutionPlan, LockfileAudit, ModeSource,
@@ -341,6 +408,79 @@ mod tests {
                 .to_string()
                 .contains("requires a lockfile for install-style")
         );
+    }
+
+    #[test]
+    fn env_override_replaces_existing_variable() {
+        let mut plan = sample_plan();
+        plan.environment.variables.push(ResolvedEnvVar {
+            name: "MY_VAR".into(),
+            value: "old".into(),
+            source: EnvVarSource::Set,
+        });
+        apply_env_overrides(&mut plan, &["MY_VAR=new".to_string()])
+            .expect("override should succeed");
+        let vars: Vec<_> = plan
+            .environment
+            .variables
+            .iter()
+            .filter(|v| v.name == "MY_VAR")
+            .collect();
+        assert_eq!(vars.len(), 1, "duplicate must be removed");
+        assert_eq!(vars[0].value, "new");
+    }
+
+    #[test]
+    fn env_override_accepts_multiple_entries() {
+        let mut plan = sample_plan();
+        apply_env_overrides(
+            &mut plan,
+            &["FOO=bar".to_string(), "BAZ=qux".to_string()],
+        )
+        .expect("multiple overrides should succeed");
+        let names: Vec<_> = plan
+            .environment
+            .variables
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect();
+        assert!(names.contains(&"FOO"));
+        assert!(names.contains(&"BAZ"));
+    }
+
+    #[test]
+    fn env_override_rejects_missing_equals() {
+        let mut plan = sample_plan();
+        let result = apply_env_overrides(&mut plan, &["NOEQUALS".to_string()]);
+        assert!(result.is_err(), "missing = must be rejected");
+    }
+
+    #[test]
+    fn env_override_rejects_invalid_name() {
+        let mut plan = sample_plan();
+        // Names starting with a digit are invalid
+        assert!(apply_env_overrides(&mut plan, &["1FOO=bar".to_string()]).is_err());
+        // Names with hyphens are invalid
+        assert!(apply_env_overrides(&mut plan, &["MY-VAR=val".to_string()]).is_err());
+        // Empty name is invalid
+        assert!(apply_env_overrides(&mut plan, &["=value".to_string()]).is_err());
+    }
+
+    #[test]
+    fn is_valid_env_name_accepts_valid_names() {
+        assert!(is_valid_env_name("FOO"));
+        assert!(is_valid_env_name("_PRIVATE"));
+        assert!(is_valid_env_name("MY_VAR_123"));
+        assert!(is_valid_env_name("a"));
+    }
+
+    #[test]
+    fn is_valid_env_name_rejects_invalid_names() {
+        assert!(!is_valid_env_name(""));
+        assert!(!is_valid_env_name("1FOO"));
+        assert!(!is_valid_env_name("MY-VAR"));
+        assert!(!is_valid_env_name("MY VAR"));
+        assert!(!is_valid_env_name("MY.VAR"));
     }
 
     #[test]

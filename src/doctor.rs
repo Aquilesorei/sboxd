@@ -206,9 +206,80 @@ fn run_docker_checks(loaded: Option<&crate::config::LoadedConfig>, checks: &mut 
         }
     }
 
-    if let Some(loaded) = loaded {
-        checks.extend(risky_config_warnings(&loaded.config));
+    // Check for rootless mode via SecurityOptions
+    match run_capture(Command::new("docker").args(["info", "--format", "{{.SecurityOptions}}"])) {
+        Ok(options) if options.contains("rootless") => {
+            checks.push(CheckResult::pass(
+                "rootless",
+                "rootless mode is active".to_string(),
+            ));
+        }
+        Ok(_) => {
+            checks.push(CheckResult::warn(
+                "rootless",
+                "Docker is not running in rootless mode — container processes have true root \
+                 inside the container (stronger isolation requires rootless mode).\n  \
+                 Note: sbox automatically injects --user UID:GID so bind-mounted files are \
+                 owned by you, not root.\n  \
+                 Fix: install rootless Docker (https://docs.docker.com/engine/security/rootless/) \
+                 then set `rootless: true` under `runtime:` in sbox.yaml to suppress this warning."
+                    .to_string(),
+            ));
+        }
+        Err(detail) => checks.push(CheckResult::warn(
+            "rootless",
+            format!("could not check rootless status: {detail}"),
+        )),
     }
+
+    if let Some(loaded) = loaded {
+        checks.extend(root_command_dispatch_warnings(&loaded.config));
+    }
+}
+
+fn root_command_dispatch_warnings(
+    config: &crate::config::model::Config,
+) -> Vec<CheckResult> {
+    // Commands that typically require running as root inside the container.
+    const ROOT_COMMANDS: &[&str] = &[
+        "apt-get", "apt ", "apk ", "yum ", "dnf ", "pacman ", "zypper ",
+    ];
+
+    // If identity explicitly sets uid:0, the user already opted in — no warning needed.
+    let explicit_root = config
+        .identity
+        .as_ref()
+        .and_then(|id| id.uid)
+        .is_some_and(|uid| uid == 0);
+    if explicit_root {
+        return vec![];
+    }
+
+    let matching_patterns: Vec<String> = config
+        .dispatch
+        .values()
+        .flat_map(|rule| rule.patterns.iter())
+        .filter(|pattern| {
+            ROOT_COMMANDS
+                .iter()
+                .any(|cmd| pattern.starts_with(cmd) || pattern.contains(cmd))
+        })
+        .cloned()
+        .collect();
+
+    if matching_patterns.is_empty() {
+        return vec![];
+    }
+
+    vec![CheckResult::warn(
+        "root-commands",
+        format!(
+            "dispatch patterns route commands that may require root inside the container \
+             ({}). sbox injects `--user UID:GID` for Docker — if the container must run \
+             as root, add `identity: {{ uid: 0, gid: 0 }}` to sbox.yaml.",
+            matching_patterns.join(", ")
+        ),
+    )]
 }
 
 fn signature_verification_check(config: &crate::config::model::Config) -> CheckResult {
@@ -621,8 +692,7 @@ fn looks_like_sensitive_mount(source: &Path) -> bool {
         return true;
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = Path::new(&home);
+    if let Some(home) = crate::platform::home_dir() {
         if source == home {
             return true;
         }
@@ -646,6 +716,7 @@ fn looks_like_sensitive_mount(source: &Path) -> bool {
 
     false
 }
+
 
 fn level_label(level: CheckLevel) -> &'static str {
     match level {
@@ -705,11 +776,12 @@ fn run_status(mut command: Command) -> Result<(), String> {
 mod tests {
     use super::{
         CheckLevel, CheckResult, credential_exposure_warnings, determine_exit_code,
-        risky_config_warnings, scan_workspace_artifacts, workspace_state_warnings,
+        risky_config_warnings, root_command_dispatch_warnings, scan_workspace_artifacts,
+        workspace_state_warnings,
     };
     use crate::config::LoadedConfig;
     use crate::config::model::{
-        Config, EnvironmentConfig, MountConfig, MountType, WorkspaceConfig,
+        Config, DispatchRule, EnvironmentConfig, MountConfig, MountType, WorkspaceConfig,
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1012,5 +1084,79 @@ mod tests {
         let warnings = credential_exposure_warnings(&loaded);
 
         assert!(warnings.iter().all(|w| w.name != "credential-exposure"));
+    }
+
+    fn make_config_with_dispatch(patterns: Vec<&str>) -> Config {
+        let mut dispatch = indexmap::IndexMap::new();
+        dispatch.insert(
+            "system".to_string(),
+            DispatchRule {
+                patterns: patterns.into_iter().map(String::from).collect(),
+                profile: "root".to_string(),
+            },
+        );
+        Config {
+            version: 1,
+            runtime: None,
+            workspace: None,
+            identity: None,
+            image: None,
+            environment: None,
+            mounts: Vec::new(),
+            caches: Vec::new(),
+            secrets: Vec::new(),
+            profiles: Default::default(),
+            dispatch,
+            package_manager: None,
+        }
+    }
+
+    #[test]
+    fn root_command_dispatch_warns_for_apt_get_pattern() {
+        let config = make_config_with_dispatch(vec!["apt-get install *"]);
+        let warnings = root_command_dispatch_warnings(&config);
+        assert!(
+            warnings.iter().any(|w| w.name == "root-commands" && w.level == CheckLevel::Warn),
+            "expected root-commands warning for apt-get pattern"
+        );
+        assert!(warnings[0].detail.contains("apt-get install *"));
+    }
+
+    #[test]
+    fn root_command_dispatch_warns_for_multiple_root_patterns() {
+        let config = make_config_with_dispatch(vec!["apk add *", "yum install *"]);
+        let warnings = root_command_dispatch_warnings(&config);
+        assert!(
+            warnings.iter().any(|w| w.name == "root-commands"),
+            "expected root-commands warning"
+        );
+        let detail = &warnings[0].detail;
+        assert!(detail.contains("apk add *") || detail.contains("yum install *"));
+    }
+
+    #[test]
+    fn root_command_dispatch_no_warning_for_safe_patterns() {
+        let config = make_config_with_dispatch(vec!["npm install", "cargo build"]);
+        let warnings = root_command_dispatch_warnings(&config);
+        assert!(
+            warnings.iter().all(|w| w.name != "root-commands"),
+            "no warning for safe package manager patterns"
+        );
+    }
+
+    #[test]
+    fn root_command_dispatch_no_warning_when_identity_uid_zero() {
+        use crate::config::model::IdentityConfig;
+        let mut config = make_config_with_dispatch(vec!["apt-get install *"]);
+        config.identity = Some(IdentityConfig {
+            map_user: None,
+            uid: Some(0),
+            gid: Some(0),
+        });
+        let warnings = root_command_dispatch_warnings(&config);
+        assert!(
+            warnings.iter().all(|w| w.name != "root-commands"),
+            "no warning when uid:0 is explicitly set — user opted in to root"
+        );
     }
 }

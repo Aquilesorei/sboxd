@@ -72,7 +72,7 @@ fn resolve_shell(
         }
     }
 
-    Ok("/bin/sh".to_string())
+    Ok(default_shell().to_string())
 }
 
 fn resolve_initial_shell(command: &ShellCommand) -> Result<String, SboxError> {
@@ -87,11 +87,18 @@ fn resolve_initial_shell(command: &ShellCommand) -> Result<String, SboxError> {
         }
     }
 
-    let fallback = "/bin/sh".to_string();
-    if fallback.is_empty() {
-        Err(SboxError::NoShellResolved)
-    } else {
-        Ok(fallback)
+    Ok(default_shell().to_string())
+}
+
+/// Platform-specific fallback shell when `SHELL` / profile config is not set.
+fn default_shell() -> &'static str {
+    #[cfg(windows)]
+    {
+        "cmd.exe"
+    }
+    #[cfg(not(windows))]
+    {
+        "/bin/sh"
     }
 }
 

@@ -47,7 +47,7 @@ pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> 
     Ok(ExitCode::SUCCESS)
 }
 
-fn render_plan(
+pub(crate) fn render_plan(
     config_path: &std::path::Path,
     plan: &ExecutionPlan,
     strict_security: bool,

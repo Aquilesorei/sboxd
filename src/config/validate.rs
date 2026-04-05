@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::SboxError;
 
@@ -460,8 +460,8 @@ fn validate_mount_source_safety(source: &Path) -> Option<String> {
 }
 
 fn is_home_root(path: &Path) -> bool {
-    if let Some(home) = std::env::var_os("HOME")
-        && path == Path::new(&home)
+    if let Some(home) = crate::platform::home_dir()
+        && path == home
     {
         return true;
     }
@@ -504,8 +504,7 @@ fn is_sensitive_host_path(path: &Path) -> bool {
         return true;
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = crate::platform::home_dir() {
         if PREFIX_PATHS
             .iter()
             .map(|suffix| home.join(suffix))
@@ -524,6 +523,7 @@ fn is_sensitive_host_path(path: &Path) -> bool {
 
     false
 }
+
 
 #[cfg(test)]
 mod tests {

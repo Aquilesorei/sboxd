@@ -11,7 +11,7 @@ fn parse_run_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { command }) => {
+        Commands::Run(RunCommand { command, .. }) => {
             assert_eq!(command, vec!["npm", "install", "lodash"]);
         }
         other => panic!("expected run command, got {other:?}"),
@@ -293,7 +293,7 @@ fn command_after_double_dash_preserved() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { command }) => {
+        Commands::Run(RunCommand { command, .. }) => {
             assert_eq!(command, vec!["echo", "-n", "hello world"]);
         }
         other => panic!("expected run command, got {other:?}"),
@@ -306,8 +306,52 @@ fn command_with_hyphen_values() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { command }) => {
+        Commands::Run(RunCommand { command, .. }) => {
             assert_eq!(command, vec!["node", "--version"]);
+        }
+        other => panic!("expected run command, got {other:?}"),
+    }
+}
+
+#[test]
+fn run_dry_run_flag() {
+    let args = vec!["sbox", "run", "--dry-run", "--", "npm", "install"];
+    let cli = Cli::parse_from(args);
+
+    match cli.command {
+        Commands::Run(RunCommand {
+            dry_run, command, ..
+        }) => {
+            assert!(dry_run);
+            assert_eq!(command, vec!["npm", "install"]);
+        }
+        other => panic!("expected run command, got {other:?}"),
+    }
+}
+
+#[test]
+fn run_env_override_single() {
+    let args = vec!["sbox", "run", "-e", "FOO=bar", "--", "npm", "install"];
+    let cli = Cli::parse_from(args);
+
+    match cli.command {
+        Commands::Run(RunCommand { env, .. }) => {
+            assert_eq!(env, vec!["FOO=bar"]);
+        }
+        other => panic!("expected run command, got {other:?}"),
+    }
+}
+
+#[test]
+fn run_env_override_multiple() {
+    let args = vec![
+        "sbox", "run", "-e", "A=1", "--env", "B=2", "--", "npm", "test",
+    ];
+    let cli = Cli::parse_from(args);
+
+    match cli.command {
+        Commands::Run(RunCommand { env, .. }) => {
+            assert_eq!(env, vec!["A=1", "B=2"]);
         }
         other => panic!("expected run command, got {other:?}"),
     }

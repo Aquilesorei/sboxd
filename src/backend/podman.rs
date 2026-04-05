@@ -236,13 +236,15 @@ fn resolve_signature_policy_path() -> Option<PathBuf> {
         }
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let user_policy = PathBuf::from(home).join(".config/containers/policy.json");
+    if let Some(home) = crate::platform::home_dir() {
+        let user_policy = home.join(".config/containers/policy.json");
         if user_policy.is_file() {
             return Some(user_policy);
         }
     }
 
+    // /etc/containers/policy.json is Linux-specific; on other platforms this
+    // path won't exist and the check is harmless.
     let system_policy = PathBuf::from("/etc/containers/policy.json");
     system_policy.is_file().then_some(system_policy)
 }
@@ -815,9 +817,8 @@ fn validate_secret_source(
 
 fn try_resolve_host_path(input: &str, base: &Path) -> Option<PathBuf> {
     if input.starts_with("~/") || input == "~" {
-        let home = std::env::var_os("HOME")?;
+        let mut path = crate::platform::home_dir()?;
         let remainder = input.strip_prefix("~/").unwrap_or("");
-        let mut path = PathBuf::from(home);
         if !remainder.is_empty() {
             path.push(remainder);
         }

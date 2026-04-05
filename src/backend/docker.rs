@@ -177,9 +177,11 @@ pub fn build_run_args_with_options(
         args.push(port.clone());
     }
 
-    // Docker has no --userns keep-id; map to explicit uid:gid using current process identity.
+    // Docker has no --userns keep-id; always map to explicit uid:gid using the current process
+    // identity so that files written to bind-mounted workspace dirs are owned by the host user
+    // rather than root (the default in non-rootless Docker).
     match &plan.user {
-        ResolvedUser::KeepId => {
+        ResolvedUser::KeepId | ResolvedUser::Default => {
             let (uid, gid) = current_uid_gid();
             args.push("--user".to_string());
             args.push(format!("{uid}:{gid}"));
@@ -188,7 +190,6 @@ pub fn build_run_args_with_options(
             args.push("--user".to_string());
             args.push(format!("{uid}:{gid}"));
         }
-        ResolvedUser::Default => {}
     }
 
     for mount in &plan.mounts {
@@ -201,7 +202,7 @@ pub fn build_run_args_with_options(
             if let Some(path) = try_resolve_host_path(source, &plan.workspace.root) {
                 args.push(format!(
                     "type=bind,src={},target={},readonly={}",
-                    path.display(),
+                    path_to_docker_str(&path),
                     cache.target,
                     bool_string(cache.read_only)
                 ));
@@ -254,7 +255,7 @@ fn append_mount_args(args: &mut Vec<String>, mount: &ResolvedMount) -> Result<()
             // Docker does not support relabel=private (Podman/SELinux extension).
             args.push(format!(
                 "type=bind,src={},target={},readonly={}",
-                source.display(),
+                path_to_docker_str(source),
                 mount.target,
                 bool_string(mount.read_only)
             ));
@@ -439,7 +440,7 @@ fn append_container_settings(
     }
 
     match &plan.user {
-        ResolvedUser::KeepId => {
+        ResolvedUser::KeepId | ResolvedUser::Default => {
             let (uid, gid) = current_uid_gid();
             args.push("--user".to_string());
             args.push(format!("{uid}:{gid}"));
@@ -448,7 +449,6 @@ fn append_container_settings(
             args.push("--user".to_string());
             args.push(format!("{uid}:{gid}"));
         }
-        ResolvedUser::Default => {}
     }
 
     for mount in &plan.mounts {
@@ -461,7 +461,7 @@ fn append_container_settings(
             if let Some(path) = try_resolve_host_path(source, &plan.workspace.root) {
                 args.push(format!(
                     "type=bind,src={},target={},readonly={}",
-                    path.display(),
+                    path_to_docker_str(&path),
                     cache.target,
                     bool_string(cache.read_only)
                 ));
@@ -597,7 +597,7 @@ fn append_secret_args(
     // Docker does not support relabel=private.
     args.push(format!(
         "type=bind,src={},target={},readonly=true",
-        path.display(),
+        path_to_docker_str(&path),
         secret.target
     ));
     Ok(())
@@ -627,9 +627,8 @@ fn validate_secret_source(
 
 fn try_resolve_host_path(input: &str, base: &Path) -> Option<PathBuf> {
     if input.starts_with("~/") || input == "~" {
-        let home = std::env::var_os("HOME")?;
+        let mut path = crate::platform::home_dir()?;
         let remainder = input.strip_prefix("~/").unwrap_or("");
-        let mut path = PathBuf::from(home);
         if !remainder.is_empty() {
             path.push(remainder);
         }
@@ -681,13 +680,92 @@ fn bool_string(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-/// Read the current process's effective uid and gid from /proc/self/status.
-/// Falls back to (0, 0) on any read failure (should not happen on Linux).
+/// Convert a host path to a string suitable for Docker `--mount src=` / `--volume` arguments.
+///
+/// On Windows, `Path::display()` emits backslashes (`C:\Users\...`), but Docker expects
+/// forward slashes (`/c/Users/...` for Docker Desktop with WSL2). On Unix the path is
+/// returned unchanged.
+///
+/// **Known limitation**: UNC paths (`\\server\share\...`) are not supported by Docker
+/// bind mounts and are not converted — Docker will reject them with a path error.
+/// Only local drive paths (`C:\...`) and extended-length prefixes (`\\?\C:\...`) work.
+fn path_to_docker_str(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let s = path.display().to_string();
+
+        // Strip extended-length prefix \\?\ (produced by canonicalize on Windows).
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+
+        // Drive-letter path: C:\... or C: (drive root with no separator)
+        if s.len() >= 2 && s.as_bytes()[1] == b':' {
+            let drive = s.chars().next().unwrap_or('c').to_ascii_lowercase();
+            // s[2..] is either empty (bare "C:"), "\" (drive root), or "\rest..."
+            let after_colon = &s[2..];
+            let rest = after_colon.replace('\\', "/");
+            // Ensure the result always starts with /drive/ so Docker treats it as absolute.
+            return if rest.starts_with('/') {
+                format!("/{drive}{rest}")
+            } else {
+                format!("/{drive}/{rest}")
+            };
+        }
+
+        // UNC path \\server\share\... — pass through with forward slashes; Docker on Windows
+        // doesn't support UNC mounts in general, but at least don't corrupt the string.
+        s.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.display().to_string()
+    }
+}
+
+/// Return the current process's effective uid and gid.
+///
+/// - Linux: parsed from `/proc/self/status` (no subprocess, always available).
+/// - macOS / other Unix: falls back to spawning `id -u` / `id -g`.
+/// - Windows: returns (0, 0) — Docker Desktop on Windows routes bind-mounts through WSL2
+///   so the host-user mapping is handled by the Docker Desktop daemon, not by `--user`.
 fn current_uid_gid() -> (u32, u32) {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let uid = parse_proc_id(&status, "Uid:");
-    let gid = parse_proc_id(&status, "Gid:");
-    (uid, gid)
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let uid = parse_proc_id(&status, "Uid:");
+        let gid = parse_proc_id(&status, "Gid:");
+        return (uid, gid);
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let uid = run_id_flag("-u").unwrap_or_else(|| {
+            eprintln!(
+                "sbox: warning: `id -u` failed — cannot determine UID; \
+                 container will run as root (uid=0). Install coreutils or run as a real user."
+            );
+            0
+        });
+        let gid = run_id_flag("-g").unwrap_or_else(|| {
+            eprintln!(
+                "sbox: warning: `id -g` failed — cannot determine GID; \
+                 container will run as root (gid=0)."
+            );
+            0
+        });
+        return (uid, gid);
+    }
+    #[cfg(windows)]
+    {
+        (0, 0)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn run_id_flag(flag: &str) -> Option<u32> {
+    let out = std::process::Command::new("id")
+        .arg(flag)
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 fn parse_proc_id(status: &str, key: &str) -> u32 {
@@ -727,8 +805,8 @@ fn ensure_built_image(
             "-t",
             tag,
             "-f",
-            &recipe_path.display().to_string(),
-            &workspace_root.display().to_string(),
+            &path_to_docker_str(recipe_path),
+            &path_to_docker_str(workspace_root),
         ])
         .current_dir(workspace_root)
         .stdin(Stdio::inherit())
@@ -747,8 +825,8 @@ fn ensure_built_image(
             backend: "docker".to_string(),
             command: format!(
                 "docker build -t {tag} -f {} {}",
-                recipe_path.display(),
-                workspace_root.display()
+                path_to_docker_str(recipe_path),
+                path_to_docker_str(workspace_root)
             ),
             status: build_status.code().unwrap_or(1),
         })
@@ -945,6 +1023,53 @@ mod tests {
         assert!(
             !joined.contains("NPM_TOKEN"),
             "denied env var NPM_TOKEN should not appear in docker args: {joined}"
+        );
+    }
+
+    #[test]
+    fn resolved_user_default_injects_user_flag() {
+        // ResolvedUser::Default must inject --user UID:GID so bind-mount files are
+        // owned by the host user rather than root in non-rootless Docker.
+        let mut plan = sample_plan();
+        plan.user = ResolvedUser::Default;
+        let args = build_run_args(&plan, "node:22").expect("args should build");
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("--user"),
+            "Default user must still inject --user for Docker: {joined}"
+        );
+        // Must NOT be keep-id (that is Podman-only)
+        assert!(
+            !joined.contains("keep-id"),
+            "--user must be explicit UID:GID, not keep-id: {joined}"
+        );
+    }
+
+    // path_to_docker_str is only meaningful on Windows, but the logic is exercised
+    // below via a cfg-gated test that checks the conversion rules directly.
+    #[test]
+    #[cfg(windows)]
+    fn path_to_docker_str_converts_drive_paths() {
+        use std::path::Path;
+        // Standard drive path
+        assert_eq!(
+            path_to_docker_str(Path::new(r"C:\Users\foo\project")),
+            "/c/Users/foo/project"
+        );
+        // Drive root only — must end with / so Docker treats it as absolute
+        assert_eq!(
+            path_to_docker_str(Path::new(r"C:\")),
+            "/c/"
+        );
+        // Bare drive letter without separator
+        assert_eq!(
+            path_to_docker_str(Path::new("C:")),
+            "/c/"
+        );
+        // Extended-length prefix stripped
+        assert_eq!(
+            path_to_docker_str(Path::new(r"\\?\C:\foo\bar")),
+            "/c/foo/bar"
         );
     }
 }

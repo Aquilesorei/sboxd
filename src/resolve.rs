@@ -391,20 +391,36 @@ fn detect_backend() -> BackendKind {
 }
 
 pub(crate) fn which_on_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|path_os| {
-            std::env::split_paths(&path_os).any(|dir| {
-                let candidate = dir.join(name);
-                candidate.is_file() && {
-                    use std::os::unix::fs::PermissionsExt;
-                    candidate
-                        .metadata()
-                        .map(|m| m.permissions().mode() & 0o111 != 0)
-                        .unwrap_or(false)
+    let Some(path_os) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path_os) {
+        #[cfg(windows)]
+        {
+            // On Windows, executables always have an extension — never treat an
+            // extensionless file as runnable (avoids false-positive backend detection).
+            for ext in &[".exe", ".cmd", ".bat"] {
+                let candidate = dir.join(format!("{name}{ext}"));
+                if candidate.is_file() {
+                    return true;
                 }
-            })
-        })
-        .unwrap_or(false)
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let candidate = dir.join(name);
+            if candidate.is_file()
+                && candidate
+                    .metadata()
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn resolve_image(

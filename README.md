@@ -12,9 +12,9 @@ The March 31 2026 Axios npm supply chain attack (Sapphire Sleet RAT delivered vi
 |----------|--------|
 | Linux + Podman | **First-class** — rootless, no root required |
 | Linux + Docker | **Supported** — same feature set, requires Docker socket access |
-| macOS + Docker Desktop | **Partial** — containers run in a Linux VM; most features work, `keep-id` user mapping may differ |
-| macOS + Podman Machine | **Partial** — similar to Docker Desktop |
-| Windows | **Not supported** |
+| macOS + Docker Desktop | **Supported** — pre-built binary available; containers run in a Linux VM |
+| macOS + Podman Machine | **Supported** — same as Docker Desktop path |
+| Windows + Docker Desktop | **Supported** — pre-built binary available; requires Docker Desktop with WSL2 backend |
 
 ## Status
 
@@ -34,24 +34,54 @@ v1 and v2 are both complete. Current implemented scope:
 
 ## Installation
 
-**From crates.io:**
-
-```bash
-cargo install sboxd
-```
-
-**Pre-built binaries** (Linux x86_64 and aarch64) are attached to each [GitHub Release](../../releases):
+**Linux (x86\_64):**
 
 ```bash
 curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-linux-x86_64 -o ~/.local/bin/sbox
 chmod +x ~/.local/bin/sbox
 ```
 
+**Linux (aarch64):**
+
+```bash
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-linux-aarch64 -o ~/.local/bin/sbox
+chmod +x ~/.local/bin/sbox
+```
+
+**macOS (Apple Silicon):**
+
+```bash
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-macos-aarch64 -o ~/.local/bin/sbox
+chmod +x ~/.local/bin/sbox
+```
+
+**macOS (Intel):**
+
+```bash
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-macos-x86_64 -o ~/.local/bin/sbox
+chmod +x ~/.local/bin/sbox
+```
+
+**Windows (x86\_64) — PowerShell:**
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-windows-x86_64.exe `
+  -OutFile "$env:USERPROFILE\.local\bin\sbox.exe"
+```
+
+Add `%USERPROFILE%\.local\bin` to your `PATH` if it isn't already.
+
+**From crates.io (any platform with Rust installed):**
+
+```bash
+cargo install sboxd
+```
+
 **From source:**
 
 ```bash
 git clone https://github.com/Aquilesorei/sboxd
-cd sbox
+cd sboxd
 cargo install --path .
 ```
 
@@ -142,10 +172,17 @@ sbox shim --dir ~/bin
 sbox shim --dry-run
 ```
 
-Then add to your shell profile:
+Then add to your shell profile (Unix/macOS):
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
+```
+
+On Windows (PowerShell), add the shim directory to your user PATH:
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "PATH", "$env:USERPROFILE\.local\bin;$env:PATH", "User")
 ```
 
 After this, `npm install`, `uv sync`, `bun install`, etc. are automatically sandboxed in any project that has an `sbox.yaml`.
