@@ -1,4 +1,5 @@
 pub mod app;
+pub mod platform;
 pub mod audit;
 pub mod backend;
 pub mod bootstrap;

@@ -73,6 +73,14 @@ pub struct InitCommand {
 #[derive(Debug, Clone, Args)]
 #[command(trailing_var_arg = true)]
 pub struct RunCommand {
+    /// Print the resolved plan and backend command without executing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Pass an extra environment variable into the sandbox, e.g. -e FOO=bar (repeatable)
+    #[arg(short = 'e', long = "env", value_name = "NAME=VALUE")]
+    pub env: Vec<String>,
+
     #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
     pub command: Vec<String>,
 }

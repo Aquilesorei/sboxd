@@ -11,14 +11,33 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
+          # Linux (statically linked musl — works on any glibc version)
           - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
             asset_name: sbox-linux-x86_64
+            binary: sbox
           - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
             asset_name: sbox-linux-aarch64
+            binary: sbox
+          # macOS (native runners — no cross-compilation needed)
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            asset_name: sbox-macos-x86_64
+            binary: sbox
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            asset_name: sbox-macos-aarch64
+            binary: sbox
+          # Windows (MSVC — matches Docker Desktop / standard Windows dev setup)
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset_name: sbox-windows-x86_64.exe
+            binary: sbox.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -28,23 +47,37 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
+      - name: Install musl-tools (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update -q
           sudo apt-get install -y musl-tools
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-          fi
+
+      - name: Install cross (Linux aarch64 musl)
+        # `cross` provides an aarch64-musl Docker image so the binary is truly
+        # statically linked against musl, not glibc.
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
+
+      - name: Build (aarch64 musl via cross)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: cross build --release --target ${{ matrix.target }}
 
       - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Prepare artifact
+      - name: Prepare artifact (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
-          cp target/${{ matrix.target }}/release/sbox ${{ matrix.asset_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset_name }}
           chmod +x ${{ matrix.asset_name }}
+
+      - name: Prepare artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.binary }}" "${{ matrix.asset_name }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -67,7 +100,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: sbox-linux-*
+          files: sbox-*
           generate_release_notes: true
 
   publish-crate:

@@ -122,6 +122,18 @@ const COMPOSE_SIDECAR_PREFIXES: &[&str] = &[
     "vault",
 ];
 
+/// Well-known service names that are almost certainly the primary application service.
+const APP_SERVICE_NAMES: &[&str] = &[
+    "app",
+    "web",
+    "api",
+    "backend",
+    "server",
+    "frontend",
+    "application",
+    "service",
+];
+
 fn detect_compose_image(cwd: &Path) -> Option<String> {
     for name in &[
         "compose.yaml",
@@ -133,13 +145,60 @@ fn detect_compose_image(cwd: &Path) -> Option<String> {
         if !path.exists() {
             continue;
         }
-        // Extract image values from the compose file — fast heuristic, no full YAML parse.
-        // Skip well-known infrastructure images (databases, caches, proxies) to avoid
-        // suggesting `postgres:16` as the app image when the db service appears first.
-        if let Ok(text) = fs::read_to_string(&path) {
-            for line in text.lines() {
-                let t = line.trim();
-                if let Some(rest) = t.strip_prefix("image:") {
+
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        // Scan the compose file tracking service context so we can disambiguate
+        // multi-service files (e.g. app + postgres). We do not do a full YAML parse —
+        // instead we use indentation to detect service-level keys and associate each
+        // `image:` line with the current service name.
+        //
+        // We detect the service-level indent dynamically: the first indented key we see
+        // under `services:` establishes the service-name indent depth. This handles 2-space,
+        // 4-space, and tab indentation without hard-coding 2 spaces.
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        let mut current_service = String::new();
+        let mut in_services = false;
+        let mut service_indent: Option<usize> = None;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if trimmed == "services:" {
+                in_services = true;
+                service_indent = None;
+                continue;
+            }
+            // A top-level key (no leading whitespace) that isn't `services:` ends the block.
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                in_services = false;
+                continue;
+            }
+
+            if !in_services {
+                continue;
+            }
+
+            let indent = line.len() - line.trim_start().len();
+
+            // The first indented key under `services:` tells us the service-name depth.
+            let svc_indent = *service_indent.get_or_insert(indent);
+
+            // A line at exactly the service-name depth ending in `:` is a service name.
+            if indent == svc_indent && trimmed.ends_with(':') && !trimmed.contains(' ') {
+                current_service = trimmed.trim_end_matches(':').to_string();
+                continue;
+            }
+
+            // `image:` lines appear one level deeper than the service name.
+            if indent > svc_indent {
+                if let Some(rest) = trimmed.strip_prefix("image:") {
                     let img = rest.trim().trim_matches('"').trim_matches('\'');
                     if img.is_empty() {
                         continue;
@@ -149,11 +208,30 @@ fn detect_compose_image(cwd: &Path) -> Option<String> {
                         .iter()
                         .any(|p| img_lower.starts_with(p));
                     if !is_sidecar {
-                        return Some(img.to_string());
+                        candidates.push((current_service.clone(), img.to_string()));
                     }
                 }
             }
         }
+
+        if candidates.is_empty() {
+            continue;
+        }
+
+        // Single candidate — done.
+        if candidates.len() == 1 {
+            return Some(candidates.remove(0).1);
+        }
+
+        // Multiple app services: prefer well-known primary service names.
+        for &preferred in APP_SERVICE_NAMES {
+            if let Some((_, img)) = candidates.iter().find(|(svc, _)| svc == preferred) {
+                return Some(img.clone());
+            }
+        }
+
+        // Fall back to the first candidate found.
+        return Some(candidates.remove(0).1);
     }
     None
 }
