@@ -1,6 +1,6 @@
 use crate::config::model::{
-    Config, DispatchRule, EnvironmentConfig, ExecutionMode, ImageConfig, ProfileConfig, ProfileRole,
-    WorkspaceConfig,
+    Config, DispatchRule, EnvironmentConfig, ExecutionMode, ImageConfig, ProfileConfig,
+    ProfileRole, WorkspaceConfig,
 };
 use crate::error::SboxError;
 
@@ -34,144 +34,154 @@ static PRESETS: &[(&str, Preset)] = &[
     (
         "npm",
         Preset {
-            install_patterns:   &["npm install*", "npm ci*", "npm i *"],
-            build_patterns:     &["npm run build*", "npm run compile*"],
-            install_writable:   &["node_modules", "package-lock.json"],
-            build_writable:     &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
-            network_allow:      &["registry.npmjs.org"],
-            lockfile_files:     &["package-lock.json", "npm-shrinkwrap.json"],
+            install_patterns: &["npm install*", "npm ci*", "npm i *"],
+            build_patterns: &["npm run build*", "npm run compile*"],
+            install_writable: &["node_modules", "package-lock.json"],
+            build_writable: &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
+            network_allow: &["registry.npmjs.org"],
+            lockfile_files: &["package-lock.json", "npm-shrinkwrap.json"],
             publish_token_envs: &["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_AUTH_TOKEN"],
-            credential_files:   &[".npmrc"],
-            default_image:      "node:22-bookworm-slim",
-            default_env:        &[],
+            credential_files: &[".npmrc"],
+            default_image: "node:22-bookworm-slim",
+            default_env: &[],
         },
     ),
     (
         "yarn",
         Preset {
-            install_patterns:   &["yarn install*", "yarn add*"],
-            build_patterns:     &["yarn build*", "yarn run build*"],
-            install_writable:   &["node_modules", "yarn.lock"],
-            build_writable:     &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
-            network_allow:      &["registry.yarnpkg.com", "registry.npmjs.org"],
-            lockfile_files:     &["yarn.lock"],
-            publish_token_envs: &["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_AUTH_TOKEN", "YARN_AUTH_TOKEN"],
-            credential_files:   &[".npmrc", ".yarnrc.yml"],
-            default_image:      "node:22-bookworm-slim",
-            default_env:        &[],
+            install_patterns: &["yarn install*", "yarn add*"],
+            build_patterns: &["yarn build*", "yarn run build*"],
+            install_writable: &["node_modules", "yarn.lock"],
+            build_writable: &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
+            network_allow: &["registry.yarnpkg.com", "registry.npmjs.org"],
+            lockfile_files: &["yarn.lock"],
+            publish_token_envs: &[
+                "NPM_TOKEN",
+                "NODE_AUTH_TOKEN",
+                "NPM_AUTH_TOKEN",
+                "YARN_AUTH_TOKEN",
+            ],
+            credential_files: &[".npmrc", ".yarnrc.yml"],
+            default_image: "node:22-bookworm-slim",
+            default_env: &[],
         },
     ),
     (
         "pnpm",
         Preset {
-            install_patterns:   &["pnpm install*", "pnpm i *", "pnpm add*"],
-            build_patterns:     &["pnpm run build*", "pnpm build*"],
-            install_writable:   &["node_modules", "pnpm-lock.yaml"],
-            build_writable:     &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
-            network_allow:      &["registry.npmjs.org"],
-            lockfile_files:     &["pnpm-lock.yaml"],
+            install_patterns: &["pnpm install*", "pnpm i *", "pnpm add*"],
+            build_patterns: &["pnpm run build*", "pnpm build*"],
+            install_writable: &["node_modules", "pnpm-lock.yaml"],
+            build_writable: &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
+            network_allow: &["registry.npmjs.org"],
+            lockfile_files: &["pnpm-lock.yaml"],
             publish_token_envs: &["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_AUTH_TOKEN"],
-            credential_files:   &[".npmrc"],
-            default_image:      "node:22-bookworm-slim",
-            default_env:        &[],
+            credential_files: &[".npmrc"],
+            default_image: "node:22-bookworm-slim",
+            default_env: &[],
         },
     ),
     (
         "bun",
         Preset {
-            install_patterns:   &["bun install*", "bun i *", "bun add*"],
-            build_patterns:     &["bun build*", "bun run build*"],
-            install_writable:   &["node_modules", "bun.lockb", "bun.lock"],
-            build_writable:     &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
-            network_allow:      &["registry.npmjs.org"],
-            lockfile_files:     &["bun.lockb", "bun.lock"],
+            install_patterns: &["bun install*", "bun i *", "bun add*"],
+            build_patterns: &["bun build*", "bun run build*"],
+            install_writable: &["node_modules", "bun.lockb", "bun.lock"],
+            build_writable: &["dist", "node_modules/.vite-temp", "node_modules/.tmp"],
+            network_allow: &["registry.npmjs.org"],
+            lockfile_files: &["bun.lockb", "bun.lock"],
             publish_token_envs: &["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_AUTH_TOKEN"],
-            credential_files:   &[".npmrc"],
-            default_image:      "oven/bun:1",
-            default_env:        &[],
+            credential_files: &[".npmrc"],
+            default_image: "oven/bun:1",
+            default_env: &[],
         },
     ),
     (
         "uv",
         Preset {
-            install_patterns:   &["uv sync*", "uv add*", "uv pip install*"],
-            build_patterns:     &["uv build*", "uv run build*"],
-            install_writable:   &[".venv"],
-            build_writable:     &["dist"],
-            network_allow:      &["pypi.org", "files.pythonhosted.org"],
-            lockfile_files:     &["uv.lock"],
+            install_patterns: &["uv sync*", "uv add*", "uv pip install*"],
+            build_patterns: &["uv build*", "uv run build*"],
+            install_writable: &[".venv"],
+            build_writable: &["dist"],
+            network_allow: &["pypi.org", "files.pythonhosted.org"],
+            lockfile_files: &["uv.lock"],
             publish_token_envs: &["UV_PUBLISH_TOKEN", "TWINE_PASSWORD", "PYPI_TOKEN"],
-            credential_files:   &[".pypirc"],
-            default_image:      "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+            credential_files: &[".pypirc"],
+            default_image: "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
             // Prevent uv from downloading a managed Python interpreter inside the sandbox;
             // the image already ships Python. Without this uv tries github.com which is not
             // in the network_allow list and fails with a confusing DNS error.
-            default_env:        &[("UV_PYTHON_DOWNLOADS", "never")],
+            default_env: &[("UV_PYTHON_DOWNLOADS", "never")],
         },
     ),
     (
         "pip",
         Preset {
-            install_patterns:   &["pip install*", "pip3 install*"],
-            build_patterns:     &[],
-            install_writable:   &[".venv"],
-            build_writable:     &[],
-            network_allow:      &["pypi.org", "files.pythonhosted.org"],
-            lockfile_files:     &["requirements.txt"],
+            install_patterns: &["pip install*", "pip3 install*"],
+            build_patterns: &[],
+            install_writable: &[".venv"],
+            build_writable: &[],
+            network_allow: &["pypi.org", "files.pythonhosted.org"],
+            lockfile_files: &["requirements.txt"],
             publish_token_envs: &["TWINE_PASSWORD", "TWINE_USERNAME", "PYPI_TOKEN"],
-            credential_files:   &[".pypirc"],
-            default_image:      "python:3.13-slim",
-            default_env:        &[],
+            credential_files: &[".pypirc"],
+            default_image: "python:3.13-slim",
+            default_env: &[],
         },
     ),
     (
         "poetry",
         Preset {
-            install_patterns:   &["poetry install*", "poetry add*"],
-            build_patterns:     &["poetry build*"],
-            install_writable:   &[".venv"],
-            build_writable:     &["dist"],
-            network_allow:      &["pypi.org", "files.pythonhosted.org"],
-            lockfile_files:     &["poetry.lock"],
+            install_patterns: &["poetry install*", "poetry add*"],
+            build_patterns: &["poetry build*"],
+            install_writable: &[".venv"],
+            build_writable: &["dist"],
+            network_allow: &["pypi.org", "files.pythonhosted.org"],
+            lockfile_files: &["poetry.lock"],
             publish_token_envs: &["POETRY_PYPI_TOKEN_PYPI", "TWINE_PASSWORD", "PYPI_TOKEN"],
-            credential_files:   &[".pypirc"],
-            default_image:      "python:3.13-slim",
-            default_env:        &[],
+            credential_files: &[".pypirc"],
+            default_image: "python:3.13-slim",
+            default_env: &[],
         },
     ),
     (
         "cargo",
         Preset {
             // fetch/generate-lockfile acquire deps from the network; build/check/test are offline
-            install_patterns:   &["cargo fetch*", "cargo generate-lockfile*"],
-            build_patterns:     &["cargo build*", "cargo check*", "cargo test*"],
-            install_writable:   &["target"],
-            build_writable:     &["target"],
-            network_allow:      &["crates.io", "static.crates.io", "index.crates.io"],
-            lockfile_files:     &["Cargo.lock"],
+            install_patterns: &["cargo fetch*", "cargo generate-lockfile*"],
+            build_patterns: &["cargo build*", "cargo check*", "cargo test*"],
+            install_writable: &["target"],
+            build_writable: &["target"],
+            network_allow: &["crates.io", "static.crates.io", "index.crates.io"],
+            lockfile_files: &["Cargo.lock"],
             publish_token_envs: &["CARGO_REGISTRY_TOKEN"],
             // ~/.cargo/credentials is home-dir and already blocked; no workspace credential file
-            credential_files:   &[],
-            default_image:      "rust:1-bookworm",
-            default_env:        &[],
+            credential_files: &[],
+            default_image: "rust:1-bookworm",
+            default_env: &[],
         },
     ),
     (
         "go",
         Preset {
-            install_patterns:   &["go get*", "go mod download*", "go mod tidy*"],
+            install_patterns: &["go get*", "go mod download*", "go mod tidy*"],
             // go build ./... writes the binary to CWD by default; "." must be writable.
             // Network is off on the build profile so this is lower risk than on install.
-            build_patterns:     &["go build -o dist/*", "go build -o bin/*", "go build ./...", "go build*"],
-            install_writable:   &["vendor"],
-            build_writable:     &["dist", "bin", "."],
-            network_allow:      &["proxy.golang.org", "sum.golang.org"],
-            lockfile_files:     &["go.sum"],
+            build_patterns: &[
+                "go build -o dist/*",
+                "go build -o bin/*",
+                "go build ./...",
+                "go build*",
+            ],
+            install_writable: &["vendor"],
+            build_writable: &["dist", "bin", "."],
+            network_allow: &["proxy.golang.org", "sum.golang.org"],
+            lockfile_files: &["go.sum"],
             // Go module proxy is read-only; no publish token concept
             publish_token_envs: &[],
-            credential_files:   &[],
-            default_image:      "golang:1.23-bookworm",
-            default_env:        &[],
+            credential_files: &[],
+            default_image: "golang:1.23-bookworm",
+            default_env: &[],
         },
     ),
 ];
@@ -186,21 +196,25 @@ fn dispatch_key(pm_name: &str, kind: &str) -> String {
     format!("pm:{pm_name}:{kind}")
 }
 
-fn make_install_profile(_pm_name: &str, preset: &'static Preset, pm: &crate::config::model::PackageManagerConfig) -> ProfileConfig {
-    let writable_paths = pm
-        .install_writable
-        .clone()
-        .unwrap_or_else(|| preset.install_writable.iter().map(|s| s.to_string()).collect());
+fn make_install_profile(
+    _pm_name: &str,
+    preset: &'static Preset,
+    pm: &crate::config::model::PackageManagerConfig,
+) -> ProfileConfig {
+    let writable_paths = pm.install_writable.clone().unwrap_or_else(|| {
+        preset
+            .install_writable
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    });
 
     let network_allow = pm
         .network_allow
         .clone()
         .unwrap_or_else(|| preset.network_allow.iter().map(|s| s.to_string()).collect());
 
-    let pre_run = pm
-        .pre_run
-        .clone()
-        .unwrap_or_default();
+    let pre_run = pm.pre_run.clone().unwrap_or_default();
 
     ProfileConfig {
         mode: ExecutionMode::Sandbox,
@@ -210,7 +224,11 @@ fn make_install_profile(_pm_name: &str, preset: &'static Preset, pm: &crate::con
         require_pinned_image: None,
         require_lockfile: None,
         role: Some(ProfileRole::Install),
-        lockfile_files: preset.lockfile_files.iter().map(|s| s.to_string()).collect(),
+        lockfile_files: preset
+            .lockfile_files
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         pre_run,
         ports: Vec::new(),
         network_allow,
@@ -223,11 +241,18 @@ fn make_install_profile(_pm_name: &str, preset: &'static Preset, pm: &crate::con
     }
 }
 
-fn make_build_profile(_pm_name: &str, preset: &'static Preset, pm: &crate::config::model::PackageManagerConfig) -> ProfileConfig {
-    let writable_paths = pm
-        .build_writable
-        .clone()
-        .unwrap_or_else(|| preset.build_writable.iter().map(|s| s.to_string()).collect());
+fn make_build_profile(
+    _pm_name: &str,
+    preset: &'static Preset,
+    pm: &crate::config::model::PackageManagerConfig,
+) -> ProfileConfig {
+    let writable_paths = pm.build_writable.clone().unwrap_or_else(|| {
+        preset
+            .build_writable
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    });
 
     ProfileConfig {
         mode: ExecutionMode::Sandbox,
@@ -331,9 +356,13 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
     // Inject toolchain-specific env defaults (e.g. UV_PYTHON_DOWNLOADS=never).
     // Only add keys not already explicitly set by the user.
     if !preset.default_env.is_empty() {
-        let env = config.environment.get_or_insert_with(EnvironmentConfig::default);
+        let env = config
+            .environment
+            .get_or_insert_with(EnvironmentConfig::default);
         for &(key, value) in preset.default_env {
-            env.set.entry(key.to_string()).or_insert_with(|| value.to_string());
+            env.set
+                .entry(key.to_string())
+                .or_insert_with(|| value.to_string());
         }
     }
 
@@ -359,7 +388,9 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
 
     // Synthesize the default profile only if the user hasn't defined one.
     if !config.profiles.contains_key("default") {
-        config.profiles.insert("default".to_string(), make_default_profile());
+        config
+            .profiles
+            .insert("default".to_string(), make_default_profile());
     }
 
     // Prepend dispatch rules so user-defined rules take precedence (IndexMap preserves order).
@@ -371,7 +402,11 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
                 0,
                 build_key,
                 DispatchRule {
-                    patterns: preset.build_patterns.iter().map(|s| s.to_string()).collect(),
+                    patterns: preset
+                        .build_patterns
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
                     profile: build_profile_key,
                 },
             );
@@ -384,7 +419,11 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
             0,
             install_key,
             DispatchRule {
-                patterns: preset.install_patterns.iter().map(|s| s.to_string()).collect(),
+                patterns: preset
+                    .install_patterns
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 profile: install_profile_key,
             },
         );
@@ -394,7 +433,9 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
     // the allowed registry endpoint to publish new poisoned packages.
     // Only add tokens not already explicitly listed — user deny lists take precedence.
     if !preset.publish_token_envs.is_empty() {
-        let env = config.environment.get_or_insert_with(EnvironmentConfig::default);
+        let env = config
+            .environment
+            .get_or_insert_with(EnvironmentConfig::default);
         for &token_var in preset.publish_token_envs {
             if !env.deny.iter().any(|d| d == token_var) {
                 env.deny.push(token_var.to_string());
@@ -404,12 +445,12 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
 
     // Inject credential file exclusions so workspace-level auth files are masked inside
     // the install container even if the user hasn't listed them explicitly.
-    if !preset.credential_files.is_empty() {
-        if let Some(workspace) = config.workspace.as_mut() {
-            for &cred_file in preset.credential_files {
-                if !workspace.exclude_paths.iter().any(|p| p == cred_file) {
-                    workspace.exclude_paths.push(cred_file.to_string());
-                }
+    if !preset.credential_files.is_empty()
+        && let Some(workspace) = config.workspace.as_mut()
+    {
+        for &cred_file in preset.credential_files {
+            if !workspace.exclude_paths.iter().any(|p| p == cred_file) {
+                workspace.exclude_paths.push(cred_file.to_string());
             }
         }
     }
@@ -481,7 +522,13 @@ mod tests {
 
         let profile = config.profiles.get("pm-npm-build").unwrap();
         assert_eq!(profile.network.as_deref(), Some("off"));
-        assert!(profile.writable_paths.as_deref().unwrap().contains(&"dist".to_string()));
+        assert!(
+            profile
+                .writable_paths
+                .as_deref()
+                .unwrap()
+                .contains(&"dist".to_string())
+        );
     }
 
     #[test]
@@ -561,7 +608,13 @@ mod tests {
             Some(vec!["node_modules".to_string(), ".cache".to_string()]);
         elaborate(&mut config).unwrap();
         assert_eq!(
-            config.profiles.get("pm-npm-install").unwrap().writable_paths.as_deref().unwrap(),
+            config
+                .profiles
+                .get("pm-npm-install")
+                .unwrap()
+                .writable_paths
+                .as_deref()
+                .unwrap(),
             &["node_modules", ".cache"]
         );
     }

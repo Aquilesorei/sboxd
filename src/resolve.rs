@@ -229,7 +229,11 @@ pub fn resolve_execution_plan(
         policy.writable,
     );
     let caches = resolve_caches(&config.caches);
-    let secrets = resolve_secrets(&config.secrets, &profile_resolution.name, profile.role.as_ref());
+    let secrets = resolve_secrets(
+        &config.secrets,
+        &profile_resolution.name,
+        profile.role.as_ref(),
+    );
     let rootless = config
         .runtime
         .as_ref()
@@ -391,14 +395,13 @@ pub(crate) fn which_on_path(name: &str) -> bool {
         .map(|path_os| {
             std::env::split_paths(&path_os).any(|dir| {
                 let candidate = dir.join(name);
-                candidate.is_file()
-                    && {
-                        use std::os::unix::fs::PermissionsExt;
-                        candidate
-                            .metadata()
-                            .map(|m| m.permissions().mode() & 0o111 != 0)
-                            .unwrap_or(false)
-                    }
+                candidate.is_file() && {
+                    use std::os::unix::fs::PermissionsExt;
+                    candidate
+                        .metadata()
+                        .map(|m| m.permissions().mode() & 0o111 != 0)
+                        .unwrap_or(false)
+                }
             })
         })
         .unwrap_or(false)
@@ -561,8 +564,7 @@ fn resolve_policy(
         })
         .map(pull_policy_flag);
 
-    let network_allow_resolved =
-        resolve_network_allow(&profile.network_allow, &profile.network);
+    let network_allow_resolved = resolve_network_allow(&profile.network_allow, &profile.network);
 
     ResolvedPolicy {
         network: profile.network.clone().unwrap_or_else(|| "off".to_string()),
@@ -656,30 +658,69 @@ fn resolve_network_allow(
 fn expand_pattern_hosts(base: &str) -> Vec<String> {
     const KNOWN: &[(&str, &[&str])] = &[
         // npm / yarn
-        ("npmjs.org",          &["registry.npmjs.org", "npmjs.org", "www.npmjs.org"]),
-        ("yarnpkg.com",        &["registry.yarnpkg.com", "yarnpkg.com"]),
+        (
+            "npmjs.org",
+            &["registry.npmjs.org", "npmjs.org", "www.npmjs.org"],
+        ),
+        ("yarnpkg.com", &["registry.yarnpkg.com", "yarnpkg.com"]),
         // Python
-        ("pypi.org",           &["pypi.org", "files.pythonhosted.org"]),
-        ("pythonhosted.org",   &["files.pythonhosted.org", "pythonhosted.org"]),
+        ("pypi.org", &["pypi.org", "files.pythonhosted.org"]),
+        (
+            "pythonhosted.org",
+            &["files.pythonhosted.org", "pythonhosted.org"],
+        ),
         // Rust
-        ("crates.io",          &["crates.io", "static.crates.io", "index.crates.io"]),
+        (
+            "crates.io",
+            &["crates.io", "static.crates.io", "index.crates.io"],
+        ),
         // Go
-        ("golang.org",         &["proxy.golang.org", "sum.golang.org", "golang.org"]),
-        ("go.dev",             &["proxy.golang.dev", "sum.golang.dev", "go.dev"]),
+        (
+            "golang.org",
+            &["proxy.golang.org", "sum.golang.org", "golang.org"],
+        ),
+        ("go.dev", &["proxy.golang.dev", "sum.golang.dev", "go.dev"]),
         // Ruby
-        ("rubygems.org",       &["rubygems.org", "api.rubygems.org", "index.rubygems.org"]),
+        (
+            "rubygems.org",
+            &["rubygems.org", "api.rubygems.org", "index.rubygems.org"],
+        ),
         // Java / Gradle / Maven
-        ("maven.org",          &["repo1.maven.org", "central.maven.org"]),
-        ("gradle.org",         &["plugins.gradle.org", "services.gradle.org", "gradle.org"]),
+        ("maven.org", &["repo1.maven.org", "central.maven.org"]),
+        (
+            "gradle.org",
+            &["plugins.gradle.org", "services.gradle.org", "gradle.org"],
+        ),
         // GitHub (source deps)
-        ("github.com",         &["github.com", "api.github.com", "raw.githubusercontent.com",
-                                  "objects.githubusercontent.com", "codeload.github.com"]),
-        ("githubusercontent.com", &["raw.githubusercontent.com", "objects.githubusercontent.com",
-                                     "avatars.githubusercontent.com"]),
+        (
+            "github.com",
+            &[
+                "github.com",
+                "api.github.com",
+                "raw.githubusercontent.com",
+                "objects.githubusercontent.com",
+                "codeload.github.com",
+            ],
+        ),
+        (
+            "githubusercontent.com",
+            &[
+                "raw.githubusercontent.com",
+                "objects.githubusercontent.com",
+                "avatars.githubusercontent.com",
+            ],
+        ),
         // Docker / OCI registries
-        ("docker.io",          &["registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com"]),
-        ("ghcr.io",            &["ghcr.io"]),
-        ("gcr.io",             &["gcr.io"]),
+        (
+            "docker.io",
+            &[
+                "registry-1.docker.io",
+                "auth.docker.io",
+                "production.cloudflare.docker.com",
+            ],
+        ),
+        ("ghcr.io", &["ghcr.io"]),
+        ("gcr.io", &["gcr.io"]),
     ];
 
     for (domain, subdomains) in KNOWN {
@@ -708,10 +749,10 @@ fn extract_pattern_base(entry: &str) -> Option<String> {
         return Some(rest.replace("\\.", "."));
     }
     // Leading-dot notation: .example.com
-    if let Some(rest) = entry.strip_prefix('.') {
-        if !rest.is_empty() {
-            return Some(rest.to_string());
-        }
+    if let Some(rest) = entry.strip_prefix('.')
+        && !rest.is_empty()
+    {
+        return Some(rest.to_string());
     }
     None
 }
@@ -821,7 +862,12 @@ fn looks_like_sensitive_env(name: &str) -> bool {
 /// Walk `dir` recursively and collect paths of files that match `pattern`.
 /// Skips large build/tool directories (.git, node_modules, target, .venv) for performance.
 /// Does not follow symlinks.
-fn collect_excluded_files(workspace_root: &Path, dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
+fn collect_excluded_files(
+    workspace_root: &Path,
+    dir: &Path,
+    pattern: &str,
+    out: &mut Vec<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -855,12 +901,12 @@ fn collect_excluded_files(workspace_root: &Path, dir: &Path, pattern: &str, out:
                 continue;
             }
             collect_excluded_files(workspace_root, &path, pattern, out);
-        } else if file_type.is_file() {
-            if let Ok(rel) = path.strip_prefix(workspace_root) {
-                let rel_str = rel.to_string_lossy();
-                if exclude_pattern_matches(&rel_str, pattern) {
-                    out.push(path);
-                }
+        } else if file_type.is_file()
+            && let Ok(rel) = path.strip_prefix(workspace_root)
+        {
+            let rel_str = rel.to_string_lossy();
+            if exclude_pattern_matches(&rel_str, pattern) {
+                out.push(path);
             }
         }
     }
@@ -879,10 +925,7 @@ pub(crate) fn exclude_pattern_matches(relative_path: &str, pattern: &str) -> boo
         glob_match(relative_path, effective)
     } else {
         // Filename-only pattern: match only the last path component
-        let filename = relative_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(relative_path);
+        let filename = relative_path.rsplit('/').next().unwrap_or(relative_path);
         glob_match(filename, effective)
     }
 }
@@ -942,16 +985,13 @@ fn resolve_mounts(
     // Profile-level writable_paths override workspace-level when set.
     // These are mounted after the workspace so Podman's mount ordering gives them precedence.
     if !workspace_writable {
-        let writable_paths: &[String] = profile
-            .writable_paths
-            .as_deref()
-            .unwrap_or_else(|| {
-                config
-                    .workspace
-                    .as_ref()
-                    .map(|ws| ws.writable_paths.as_slice())
-                    .unwrap_or(&[])
-            });
+        let writable_paths: &[String] = profile.writable_paths.as_deref().unwrap_or_else(|| {
+            config
+                .workspace
+                .as_ref()
+                .map(|ws| ws.writable_paths.as_slice())
+                .unwrap_or(&[])
+        });
         for rel_path in writable_paths {
             mounts.push(ResolvedMount {
                 kind: "bind".to_string(),
@@ -1036,10 +1076,7 @@ fn resolve_secrets(
         .filter(|secret| {
             // when_profiles: include only if empty or profile name matches
             let profile_ok = secret.when_profiles.is_empty()
-                || secret
-                    .when_profiles
-                    .iter()
-                    .any(|p| p == active_profile);
+                || secret.when_profiles.iter().any(|p| p == active_profile);
 
             // deny_roles: exclude if the active profile's role is in the deny list
             let role_ok = active_role
@@ -1173,7 +1210,6 @@ fn classify_reference_trust(reference: &str, digest: Option<&str>) -> ImageTrust
     }
 }
 
-
 /// Resolve lockfile audit from the profile's explicit `lockfile_files` list.
 fn resolve_lockfile_audit(
     lockfile_files: &[String],
@@ -1209,7 +1245,11 @@ fn parse_pre_run_commands(pre_run: &[String]) -> Vec<Vec<String>> {
         .iter()
         .filter_map(|s| {
             let tokens: Vec<String> = s.split_whitespace().map(str::to_string).collect();
-            if tokens.is_empty() { None } else { Some(tokens) }
+            if tokens.is_empty() {
+                None
+            } else {
+                Some(tokens)
+            }
         })
         .collect()
 }
@@ -1227,8 +1267,8 @@ mod tests {
         BackendKind,
         load::LoadedConfig,
         model::{
-            Config, DispatchRule, ExecutionMode, ImageConfig,
-            ProfileConfig, ProfileRole, RuntimeConfig, WorkspaceConfig,
+            Config, DispatchRule, ExecutionMode, ImageConfig, ProfileConfig, ProfileRole,
+            RuntimeConfig, WorkspaceConfig,
         },
     };
 
@@ -1557,9 +1597,15 @@ mod tests {
     fn profile_lockfile_files_drive_lockfile_audit() {
         let cli = base_cli();
         let mut config = base_config();
-        let profile = config.profiles.get_mut("install").expect("install profile exists");
+        let profile = config
+            .profiles
+            .get_mut("install")
+            .expect("install profile exists");
         profile.require_lockfile = Some(true);
-        profile.lockfile_files = vec!["package-lock.json".to_string(), "npm-shrinkwrap.json".to_string()];
+        profile.lockfile_files = vec![
+            "package-lock.json".to_string(),
+            "npm-shrinkwrap.json".to_string(),
+        ];
 
         let plan = resolve_execution_plan(
             &cli,
@@ -1585,7 +1631,10 @@ mod tests {
             .profiles
             .get_mut("install")
             .expect("install profile exists")
-            .pre_run = vec!["npm audit --audit-level=high".to_string(), "echo done".to_string()];
+            .pre_run = vec![
+            "npm audit --audit-level=high".to_string(),
+            "echo done".to_string(),
+        ];
 
         let plan = resolve_execution_plan(
             &cli,
@@ -1596,7 +1645,10 @@ mod tests {
         .expect("resolution should succeed");
 
         assert_eq!(plan.audit.pre_run.len(), 2);
-        assert_eq!(plan.audit.pre_run[0], vec!["npm", "audit", "--audit-level=high"]);
+        assert_eq!(
+            plan.audit.pre_run[0],
+            vec!["npm", "audit", "--audit-level=high"]
+        );
         assert_eq!(plan.audit.pre_run[1], vec!["echo", "done"]);
     }
 
@@ -1708,6 +1760,9 @@ mod tests {
         // Path-relative pattern (contains slash): matches full relative path
         assert!(exclude_pattern_matches("secrets/prod.json", "secrets/*"));
         assert!(!exclude_pattern_matches("other/prod.json", "secrets/*"));
-        assert!(exclude_pattern_matches("config/.env.local", "config/.env.*"));
+        assert!(exclude_pattern_matches(
+            "config/.env.local",
+            "config/.env.*"
+        ));
     }
 }

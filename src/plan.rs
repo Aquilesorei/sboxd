@@ -5,8 +5,8 @@ use crate::cli::{Cli, PlanCommand};
 use crate::config::{LoadOptions, load_config};
 use crate::error::SboxError;
 use crate::resolve::{
-    CwdMapping, EnvVarSource, ExecutionPlan, ModeSource, ProfileSource, ResolvedImageSource,
-    ResolutionTarget, resolve_execution_plan,
+    CwdMapping, EnvVarSource, ExecutionPlan, ModeSource, ProfileSource, ResolutionTarget,
+    ResolvedImageSource, resolve_execution_plan,
 };
 
 pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> {
@@ -17,11 +17,12 @@ pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> 
 
     let (target, effective_command): (ResolutionTarget<'_>, Vec<String>) =
         if command.command.is_empty() {
-            let profile = cli.profile.as_deref().ok_or_else(|| {
-                SboxError::ProfileResolutionFailed {
-                    command: "<none>".to_string(),
-                }
-            })?;
+            let profile =
+                cli.profile
+                    .as_deref()
+                    .ok_or_else(|| SboxError::ProfileResolutionFailed {
+                        command: "<none>".to_string(),
+                    })?;
             (
                 ResolutionTarget::Exec { profile },
                 vec!["<profile-inspection>".to_string()],
@@ -74,38 +75,38 @@ fn render_plan(
         writeln!(output, "audit: <not applicable for profile inspection>").ok();
         writeln!(output).ok();
     } else {
-    writeln!(output, "audit:").ok();
-    writeln!(output, "  install_style: {}", plan.audit.install_style).ok();
-    writeln!(output, "  strict_security: {}", strict_security).ok();
-    writeln!(
-        output,
-        "  trusted_image_required: {}",
-        crate::exec::trusted_image_required(plan, strict_security)
-    )
-    .ok();
-    writeln!(
-        output,
-        "  sensitive_pass_through: {}",
-        if plan.audit.sensitive_pass_through_vars.is_empty() {
-            "<none>".to_string()
-        } else {
-            plan.audit.sensitive_pass_through_vars.join(", ")
-        }
-    )
-    .ok();
-    writeln!(
-        output,
-        "  lockfile: {}",
-        describe_lockfile_audit(&plan.audit.lockfile)
-    )
-    .ok();
-    writeln!(
-        output,
-        "  pre_run: {}",
-        describe_pre_run(&plan.audit.pre_run)
-    )
-    .ok();
-    writeln!(output).ok();
+        writeln!(output, "audit:").ok();
+        writeln!(output, "  install_style: {}", plan.audit.install_style).ok();
+        writeln!(output, "  strict_security: {}", strict_security).ok();
+        writeln!(
+            output,
+            "  trusted_image_required: {}",
+            crate::exec::trusted_image_required(plan, strict_security)
+        )
+        .ok();
+        writeln!(
+            output,
+            "  sensitive_pass_through: {}",
+            if plan.audit.sensitive_pass_through_vars.is_empty() {
+                "<none>".to_string()
+            } else {
+                plan.audit.sensitive_pass_through_vars.join(", ")
+            }
+        )
+        .ok();
+        writeln!(
+            output,
+            "  lockfile: {}",
+            describe_lockfile_audit(&plan.audit.lockfile)
+        )
+        .ok();
+        writeln!(
+            output,
+            "  pre_run: {}",
+            describe_pre_run(&plan.audit.pre_run)
+        )
+        .ok();
+        writeln!(output).ok();
     } // end audit block
 
     writeln!(output, "resolution:").ok();
@@ -331,12 +332,10 @@ fn render_plan(
         }
     }
 
-    if show_command {
-        if let Some(podman_args) = render_podman_command(plan) {
-            writeln!(output).ok();
-            writeln!(output, "backend command:").ok();
-            writeln!(output, "  {podman_args}").ok();
-        }
+    if show_command && let Some(podman_args) = render_podman_command(plan) {
+        writeln!(output).ok();
+        writeln!(output, "backend command:").ok();
+        writeln!(output, "  {podman_args}").ok();
     }
 
     output
@@ -427,21 +426,24 @@ fn describe_lockfile_audit(audit: &crate::resolve::LockfileAudit) -> String {
         } else {
             "advisory"
         };
-        format!("{requirement}, present ({})", audit.expected_files.join(" or "))
+        format!(
+            "{requirement}, present ({})",
+            audit.expected_files.join(" or ")
+        )
     } else {
         let requirement = if audit.required {
             "required"
         } else {
             "advisory"
         };
-        format!("{requirement}, missing ({})", audit.expected_files.join(" or "))
+        format!(
+            "{requirement}, missing ({})",
+            audit.expected_files.join(" or ")
+        )
     }
 }
 
-fn describe_network_allow(
-    resolved: &[(String, String)],
-    patterns: &[String],
-) -> String {
+fn describe_network_allow(resolved: &[(String, String)], patterns: &[String]) -> String {
     if resolved.is_empty() && patterns.is_empty() {
         return "<none>".to_string();
     }

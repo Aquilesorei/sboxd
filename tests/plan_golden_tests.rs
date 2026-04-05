@@ -49,7 +49,12 @@ fn assert_matches_fixture(actual: &str, fixture_name: &str) {
         return;
     }
     let expected = fs::read_to_string(&fixture_path).expect("fixture should exist");
-    assert_eq!(actual, expected, "golden output mismatch for {}", fixture_path.display());
+    assert_eq!(
+        actual,
+        expected,
+        "golden output mismatch for {}",
+        fixture_path.display()
+    );
 }
 
 #[test]
@@ -73,16 +78,16 @@ fn npm_install_plan_matches_golden_output() {
             "/var/tmp/sbox/npm-artifacts/npm-smoke-0.1.0.tgz",
         ],
     );
-    assert_matches_fixture(
-        &normalize_output(&actual),
-        "plan_npm_install_global.txt",
-    );
+    assert_matches_fixture(&normalize_output(&actual), "plan_npm_install_global.txt");
 }
 
 #[test]
 fn npm_package_add_plan_matches_golden_output() {
     let actual = run_sbox(&repo_root(), &["plan", "--", "npm", "install"]);
-    assert_matches_fixture(&normalize_output(&actual), "plan_npm_install_missing_lockfile.txt");
+    assert_matches_fixture(
+        &normalize_output(&actual),
+        "plan_npm_install_missing_lockfile.txt",
+    );
 }
 
 #[test]
@@ -115,14 +120,7 @@ fn poetry_install_plan_matches_golden_output() {
     let example_dir = repo_root().join("examples/poetry-smoke");
     let actual = run_sbox(
         &example_dir,
-        &[
-            "--config",
-            "sbox.yaml",
-            "plan",
-            "--",
-            "poetry",
-            "install",
-        ],
+        &["--config", "sbox.yaml", "plan", "--", "poetry", "install"],
     );
     assert_matches_fixture(&normalize_output(&actual), "plan_poetry_install.txt");
 }

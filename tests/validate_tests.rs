@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use sbox::config::model::{
     BackendKind, CacheConfig, CapabilitiesSpec, Config, DispatchRule, EnvironmentConfig,
-    ExecutionMode, IdentityConfig, ImageConfig, MountConfig, MountType, ProfileConfig,
-    ProfileRole, RuntimeConfig, SecretConfig, WorkspaceConfig,
+    ExecutionMode, IdentityConfig, ImageConfig, MountConfig, MountType, ProfileConfig, ProfileRole,
+    RuntimeConfig, SecretConfig, WorkspaceConfig,
 };
 use sbox::config::validate::{collect_config_warnings, validate_config};
 
@@ -51,7 +51,7 @@ fn base_config() -> Config {
             mount: Some("/workspace".to_string()),
             writable: Some(true),
             writable_paths: Vec::new(),
-                exclude_paths: Vec::new(),
+            exclude_paths: Vec::new(),
         }),
         identity: None,
         image: Some(ImageConfig {
@@ -108,7 +108,8 @@ fn accepts_missing_runtime_backend() {
     let mut config = base_config();
     config.runtime.as_mut().unwrap().backend = None;
 
-    validate_config(&config).expect("missing backend should be accepted (auto-detected at runtime)");
+    validate_config(&config)
+        .expect("missing backend should be accepted (auto-detected at runtime)");
 }
 
 #[test]
@@ -855,7 +856,9 @@ fn warns_on_credential_secret_not_restricted_from_install_profiles() {
 
     let warnings = collect_config_warnings(&config);
     assert!(
-        warnings.iter().any(|w| w.contains("not restricted from install profiles")),
+        warnings
+            .iter()
+            .any(|w| w.contains("not restricted from install profiles")),
         "expected credential secret warning, got: {warnings:?}"
     );
 }
@@ -895,7 +898,69 @@ fn no_warning_for_credential_secret_with_deny_roles() {
 
     let warnings = collect_config_warnings(&config);
     assert!(
-        !warnings.iter().any(|w| w.contains("not restricted from install profiles")),
+        !warnings
+            .iter()
+            .any(|w| w.contains("not restricted from install profiles")),
         "unexpected warning when secret has deny_roles: {warnings:?}"
+    );
+}
+
+#[test]
+fn warns_on_docker_without_rootless() {
+    let mut config = base_config();
+    config.runtime = Some(RuntimeConfig {
+        backend: Some(BackendKind::Docker),
+        rootless: Some(false),
+        strict_security: None,
+        reuse_container: None,
+        container_name: None,
+        pull_policy: None,
+        require_pinned_image: None,
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        warnings.iter().any(|w| w.contains("owned by root")),
+        "expected root ownership warning for docker without rootless, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn no_warning_for_docker_with_rootless_true() {
+    let mut config = base_config();
+    config.runtime = Some(RuntimeConfig {
+        backend: Some(BackendKind::Docker),
+        rootless: Some(true),
+        strict_security: None,
+        reuse_container: None,
+        container_name: None,
+        pull_policy: None,
+        require_pinned_image: None,
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        !warnings.iter().any(|w| w.contains("owned by root")),
+        "unexpected root ownership warning when rootless: true, got: {warnings:?}"
+    );
+}
+
+#[test]
+fn no_warning_for_podman_backend() {
+    let mut config = base_config();
+    config.runtime = Some(RuntimeConfig {
+        backend: Some(BackendKind::Podman),
+        rootless: Some(false),
+        strict_security: None,
+        reuse_container: None,
+        container_name: None,
+        pull_policy: None,
+        require_pinned_image: None,
+    });
+
+    let warnings = collect_config_warnings(&config);
+    assert!(
+        !warnings.iter().any(|w| w.contains("owned by root")),
+        "unexpected root ownership warning for podman backend, got: {warnings:?}"
     );
 }

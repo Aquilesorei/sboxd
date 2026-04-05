@@ -34,7 +34,10 @@ pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
         let dest = shim_dir.join(name);
 
         if dest.exists() && !command.force && !command.dry_run {
-            println!("skip   {} (already exists; use --force to overwrite)", dest.display());
+            println!(
+                "skip   {} (already exists; use --force to overwrite)",
+                dest.display()
+            );
             skipped += 1;
             continue;
         }
@@ -57,7 +60,10 @@ pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
         })?;
 
         let mut perms = fs::metadata(&dest)
-            .map_err(|source| SboxError::InitWrite { path: dest.clone(), source })?
+            .map_err(|source| SboxError::InitWrite {
+                path: dest.clone(),
+                source,
+            })?
             .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&dest, perms).map_err(|source| SboxError::InitWrite {
@@ -67,7 +73,10 @@ pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
 
         match &real_binary {
             Some(p) => println!("created {} -> {}", dest.display(), p.display()),
-            None => println!("created {} (real binary not found at shim time)", dest.display()),
+            None => println!(
+                "created {} (real binary not found at shim time)",
+                dest.display()
+            ),
         }
         created += 1;
     }
@@ -75,7 +84,10 @@ pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
     if !command.dry_run {
         println!();
         if created > 0 {
-            println!("Add {} to your PATH before the real package manager binaries:", shim_dir.display());
+            println!(
+                "Add {} to your PATH before the real package manager binaries:",
+                shim_dir.display()
+            );
             println!();
             println!("  export PATH=\"{}:$PATH\"", shim_dir.display());
             println!();
@@ -107,8 +119,7 @@ fn resolve_shim_dir(command: &ShimCommand) -> Result<PathBuf, SboxError> {
     }
 
     // Last resort: use current directory
-    std::env::current_dir()
-        .map_err(|source| SboxError::CurrentDirectory { source })
+    std::env::current_dir().map_err(|source| SboxError::CurrentDirectory { source })
 }
 
 /// Search PATH for `name`, skipping `exclude_dir` to avoid resolving the shim itself.

@@ -37,8 +37,8 @@ fn execute(
 
 fn execute_plan(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
     match plan.mode {
-        crate::config::model::ExecutionMode::Host => execute_host(&plan),
-        crate::config::model::ExecutionMode::Sandbox => execute_sandbox(&plan),
+        crate::config::model::ExecutionMode::Host => execute_host(plan),
+        crate::config::model::ExecutionMode::Sandbox => execute_sandbox(plan),
     }
 }
 
@@ -78,7 +78,6 @@ pub(crate) fn status_to_exit_code(status: std::process::ExitStatus) -> ExitCode 
     }
 }
 
-
 pub(crate) fn execute_sandbox(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
     match plan.backend {
         crate::config::BackendKind::Podman => crate::backend::podman::execute(plan),
@@ -95,7 +94,10 @@ pub(crate) fn validate_execution_safety(
     }
 
     if trusted_image_required(plan, strict_security)
-        && matches!(plan.image.trust, crate::resolve::ImageTrust::MutableReference)
+        && matches!(
+            plan.image.trust,
+            crate::resolve::ImageTrust::MutableReference
+        )
     {
         return Err(SboxError::UnsafeExecutionPolicy {
             command: plan.command_string.clone(),
@@ -291,7 +293,8 @@ mod tests {
 
     #[test]
     fn strict_security_requires_trusted_image() {
-        let error = validate_execution_safety(&sample_plan(), true).expect_err("strict mode should reject");
+        let error =
+            validate_execution_safety(&sample_plan(), true).expect_err("strict mode should reject");
         assert!(error.to_string().contains("pinned image digest"));
     }
 
@@ -331,8 +334,13 @@ mod tests {
         plan.audit.sensitive_pass_through_vars.clear();
         plan.audit.lockfile.present = false;
 
-        let error = validate_execution_safety(&plan, true).expect_err("missing lockfile should reject");
-        assert!(error.to_string().contains("requires a lockfile for install-style"));
+        let error =
+            validate_execution_safety(&plan, true).expect_err("missing lockfile should reject");
+        assert!(
+            error
+                .to_string()
+                .contains("requires a lockfile for install-style")
+        );
     }
 
     #[test]

@@ -143,7 +143,7 @@ fn minimal_config() -> Config {
             mount: Some("/workspace".to_string()),
             writable: Some(true),
             writable_paths: Vec::new(),
-                exclude_paths: Vec::new(),
+            exclude_paths: Vec::new(),
         }),
         identity: None,
         image: Some(ImageConfig {
@@ -731,14 +731,11 @@ fn structured_capabilities_resolves_drop_and_add() {
     use sbox::config::model::{CapabilitiesConfig, CapabilitiesSpec};
 
     let mut config = minimal_config();
-    config
-        .profiles
-        .get_mut("default")
-        .unwrap()
-        .capabilities = Some(CapabilitiesSpec::Structured(CapabilitiesConfig {
-        drop: vec!["all".to_string()],
-        add: vec!["NET_BIND_SERVICE".to_string()],
-    }));
+    config.profiles.get_mut("default").unwrap().capabilities =
+        Some(CapabilitiesSpec::Structured(CapabilitiesConfig {
+            drop: vec!["all".to_string()],
+            add: vec!["NET_BIND_SERVICE".to_string()],
+        }));
 
     let loaded = LoadedConfig {
         invocation_dir: PathBuf::from("/workspace/project"),
@@ -747,9 +744,8 @@ fn structured_capabilities_resolves_drop_and_add() {
         config,
     };
     let cli = base_cli();
-    let plan =
-        resolve_execution_plan(&cli, &loaded, ResolutionTarget::Plan, &["echo".into()])
-            .expect("resolution should succeed");
+    let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Plan, &["echo".into()])
+        .expect("resolution should succeed");
 
     assert_eq!(plan.policy.cap_drop, vec!["all"]);
     assert_eq!(plan.policy.cap_add, vec!["NET_BIND_SERVICE"]);
@@ -760,11 +756,8 @@ fn keyword_drop_all_still_works_for_backward_compat() {
     use sbox::config::model::CapabilitiesSpec;
 
     let mut config = minimal_config();
-    config
-        .profiles
-        .get_mut("default")
-        .unwrap()
-        .capabilities = Some(CapabilitiesSpec::Keyword("drop-all".to_string()));
+    config.profiles.get_mut("default").unwrap().capabilities =
+        Some(CapabilitiesSpec::Keyword("drop-all".to_string()));
 
     let loaded = LoadedConfig {
         invocation_dir: PathBuf::from("/workspace/project"),
@@ -773,9 +766,8 @@ fn keyword_drop_all_still_works_for_backward_compat() {
         config,
     };
     let cli = base_cli();
-    let plan =
-        resolve_execution_plan(&cli, &loaded, ResolutionTarget::Plan, &["echo".into()])
-            .expect("resolution should succeed");
+    let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Plan, &["echo".into()])
+        .expect("resolution should succeed");
 
     assert_eq!(plan.policy.cap_drop, vec!["all"]);
     assert!(plan.policy.cap_add.is_empty());
@@ -795,9 +787,8 @@ fn rootless_false_defaults_to_default_user() {
         config,
     };
     let cli = base_cli();
-    let plan =
-        resolve_execution_plan(&cli, &loaded, ResolutionTarget::Plan, &["echo".into()])
-            .expect("resolution should succeed");
+    let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Plan, &["echo".into()])
+        .expect("resolution should succeed");
 
     assert!(matches!(plan.user, ResolvedUser::Default));
 }
@@ -866,10 +857,7 @@ fn plan_exec_target_forces_named_profile() {
     .expect("resolution should succeed");
 
     assert_eq!(plan.profile_name, "install");
-    assert!(matches!(
-        plan.profile_source,
-        ProfileSource::ExecSubcommand
-    ));
+    assert!(matches!(plan.profile_source, ProfileSource::ExecSubcommand));
 }
 
 #[test]
@@ -912,12 +900,7 @@ fn writable_paths_inject_rw_mounts_when_workspace_is_readonly() {
         exclude_paths: Vec::new(),
     });
     // profile must also be non-writable for workspace to be ro
-    loaded
-        .config
-        .profiles
-        .get_mut("default")
-        .unwrap()
-        .writable = Some(false);
+    loaded.config.profiles.get_mut("default").unwrap().writable = Some(false);
 
     let cli = base_cli();
     let plan = resolve_execution_plan(
@@ -957,12 +940,7 @@ fn writable_paths_ignored_when_profile_makes_workspace_writable() {
     // Actually workspace_writable = workspace.writable && profile_writable
     // So false && true = false → workspace is still ro → holes ARE injected
     // Let's test that profile.writable: true DOES NOT override workspace.writable: false
-    loaded
-        .config
-        .profiles
-        .get_mut("default")
-        .unwrap()
-        .writable = Some(true);
+    loaded.config.profiles.get_mut("default").unwrap().writable = Some(true);
 
     let cli = base_cli();
     let plan = resolve_execution_plan(
@@ -985,17 +963,17 @@ fn writable_paths_ignored_when_profile_makes_workspace_writable() {
 // Tests for workspace.exclude_paths — require real filesystem presence
 // since the glob walk checks which files actually exist.
 mod exclude_paths_tests {
-    use std::fs;
-    use tempfile::TempDir;
     use indexmap::IndexMap;
     use std::collections::BTreeMap;
+    use std::fs;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     use sbox::cli::{Cli, Commands, PlanCommand};
     use sbox::config::load::LoadedConfig;
     use sbox::config::model::{
-        BackendKind, Config, EnvironmentConfig, ExecutionMode, ImageConfig,
-        ProfileConfig, RuntimeConfig, WorkspaceConfig,
+        BackendKind, Config, EnvironmentConfig, ExecutionMode, ImageConfig, ProfileConfig,
+        RuntimeConfig, WorkspaceConfig,
     };
     use sbox::resolve::{ResolutionTarget, resolve_execution_plan};
 
@@ -1028,10 +1006,10 @@ mod exclude_paths_tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-            role: None,
-            lockfile_files: Vec::new(),
-            pre_run: Vec::new(),
-            network_allow: Vec::new(),
+                role: None,
+                lockfile_files: Vec::new(),
+                pre_run: Vec::new(),
+                network_allow: Vec::new(),
                 ports: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
@@ -1099,13 +1077,8 @@ mod exclude_paths_tests {
         };
 
         let cli = make_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded,
-            ResolutionTarget::Run,
-            &["echo".into()],
-        )
-        .expect("plan should resolve");
+        let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Run, &["echo".into()])
+            .expect("plan should resolve");
 
         let mask_mounts: Vec<_> = plan.mounts.iter().filter(|m| m.kind == "mask").collect();
         assert_eq!(mask_mounts.len(), 1, "should have one mask mount");
@@ -1126,13 +1099,8 @@ mod exclude_paths_tests {
         };
 
         let cli = make_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded,
-            ResolutionTarget::Run,
-            &["echo".into()],
-        )
-        .expect("plan should resolve");
+        let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Run, &["echo".into()])
+            .expect("plan should resolve");
 
         let mask_mounts: Vec<_> = plan.mounts.iter().filter(|m| m.kind == "mask").collect();
         assert!(mask_mounts.is_empty(), "no mask when file doesn't exist");
@@ -1154,13 +1122,8 @@ mod exclude_paths_tests {
         };
 
         let cli = make_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded,
-            ResolutionTarget::Run,
-            &["echo".into()],
-        )
-        .expect("plan should resolve");
+        let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Run, &["echo".into()])
+            .expect("plan should resolve");
 
         let mask_targets: Vec<&str> = plan
             .mounts
@@ -1189,17 +1152,11 @@ mod exclude_paths_tests {
         };
 
         let cli = make_cli();
-        let plan = resolve_execution_plan(
-            &cli,
-            &loaded,
-            ResolutionTarget::Run,
-            &["echo".into()],
-        )
-        .expect("plan should resolve");
+        let plan = resolve_execution_plan(&cli, &loaded, ResolutionTarget::Run, &["echo".into()])
+            .expect("plan should resolve");
 
         let mask_mounts: Vec<_> = plan.mounts.iter().filter(|m| m.kind == "mask").collect();
         assert_eq!(mask_mounts.len(), 1);
         assert_eq!(mask_mounts[0].target, "/workspace/config/.env");
     }
 }
-

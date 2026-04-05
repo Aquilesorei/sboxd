@@ -85,7 +85,12 @@ fn execute_interactive(cli: &Cli, command: &InitCommand) -> Result<ExitCode, Sbo
 }
 
 fn detect_dockerfile(cwd: &Path) -> Option<String> {
-    for name in &["Dockerfile", "Dockerfile.dev", "Dockerfile.local", "dockerfile"] {
+    for name in &[
+        "Dockerfile",
+        "Dockerfile.dev",
+        "Dockerfile.local",
+        "dockerfile",
+    ] {
         if cwd.join(name).exists() {
             return Some(name.to_string());
         }
@@ -96,16 +101,38 @@ fn detect_dockerfile(cwd: &Path) -> Option<String> {
 /// Well-known infrastructure/sidecar image name fragments to skip when scanning compose files.
 /// We want the application service image, not postgres/redis/etc.
 const COMPOSE_SIDECAR_PREFIXES: &[&str] = &[
-    "postgres", "mysql", "mariadb", "mongo", "redis", "rabbitmq",
-    "elasticsearch", "kibana", "grafana", "prometheus", "influxdb",
-    "nginx", "traefik", "caddy", "haproxy",
-    "zookeeper", "kafka", "memcached", "vault",
+    "postgres",
+    "mysql",
+    "mariadb",
+    "mongo",
+    "redis",
+    "rabbitmq",
+    "elasticsearch",
+    "kibana",
+    "grafana",
+    "prometheus",
+    "influxdb",
+    "nginx",
+    "traefik",
+    "caddy",
+    "haproxy",
+    "zookeeper",
+    "kafka",
+    "memcached",
+    "vault",
 ];
 
 fn detect_compose_image(cwd: &Path) -> Option<String> {
-    for name in &["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"] {
+    for name in &[
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+    ] {
         let path = cwd.join(name);
-        if !path.exists() { continue; }
+        if !path.exists() {
+            continue;
+        }
         // Extract image values from the compose file — fast heuristic, no full YAML parse.
         // Skip well-known infrastructure images (databases, caches, proxies) to avoid
         // suggesting `postgres:16` as the app image when the db service appears first.
@@ -114,7 +141,9 @@ fn detect_compose_image(cwd: &Path) -> Option<String> {
                 let t = line.trim();
                 if let Some(rest) = t.strip_prefix("image:") {
                     let img = rest.trim().trim_matches('"').trim_matches('\'');
-                    if img.is_empty() { continue; }
+                    if img.is_empty() {
+                        continue;
+                    }
                     let img_lower = img.to_lowercase();
                     let is_sidecar = COMPOSE_SIDECAR_PREFIXES
                         .iter()
@@ -139,28 +168,32 @@ fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError
     // ── Package manager ───────────────────────────────────────────────────────
     let pm_idx = Select::with_theme(theme)
         .with_prompt("Package manager")
-        .items(&["npm", "yarn", "pnpm", "bun", "uv", "pip", "poetry", "cargo", "go"])
+        .items(&[
+            "npm", "yarn", "pnpm", "bun", "uv", "pip", "poetry", "cargo", "go",
+        ])
         .default(0)
         .interact()
         .map_err(|_| SboxError::CurrentDirectory {
             source: std::io::Error::other("prompt cancelled"),
         })?;
     let (pm_name, stock_image) = [
-        ("npm",    "node:22-bookworm-slim"),
-        ("yarn",   "node:22-bookworm-slim"),
-        ("pnpm",   "node:22-bookworm-slim"),
-        ("bun",    "oven/bun:1"),
-        ("uv",     "ghcr.io/astral-sh/uv:python3.13-bookworm-slim"),
-        ("pip",    "python:3.13-slim"),
+        ("npm", "node:22-bookworm-slim"),
+        ("yarn", "node:22-bookworm-slim"),
+        ("pnpm", "node:22-bookworm-slim"),
+        ("bun", "oven/bun:1"),
+        ("uv", "ghcr.io/astral-sh/uv:python3.13-bookworm-slim"),
+        ("pip", "python:3.13-slim"),
         ("poetry", "python:3.13-slim"),
-        ("cargo",  "rust:1-bookworm"),
-        ("go",     "golang:1.23-bookworm"),
+        ("cargo", "rust:1-bookworm"),
+        ("go", "golang:1.23-bookworm"),
     ][pm_idx];
 
     // ── Image — prefer existing Docker infrastructure over stock public images ─
     let image_block: String = if let Some(ref dockerfile) = found_dockerfile {
         let use_it = Confirm::with_theme(theme)
-            .with_prompt(format!("Found `{dockerfile}` — use it as the container image?"))
+            .with_prompt(format!(
+                "Found `{dockerfile}` — use it as the container image?"
+            ))
             .default(true)
             .interact()
             .map_err(|_| SboxError::CurrentDirectory {
@@ -174,7 +207,9 @@ fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError
         }
     } else if let Some(ref compose_image) = found_compose_image {
         let use_it = Confirm::with_theme(theme)
-            .with_prompt(format!("Found image `{compose_image}` in compose file — use it?"))
+            .with_prompt(format!(
+                "Found image `{compose_image}` in compose file — use it?"
+            ))
             .default(true)
             .interact()
             .map_err(|_| SboxError::CurrentDirectory {
@@ -209,7 +244,7 @@ fn execute_interactive_simple(theme: &ColorfulTheme) -> Result<String, SboxError
     let exclude_paths = default_exclude_paths(pm_name);
 
     Ok(format!(
-"version: 1
+        "version: 1
 
 {runtime_block}
 workspace:
@@ -224,7 +259,8 @@ environment:
 
 package_manager:
   name: {pm_name}
-"))
+"
+    ))
 }
 
 fn prompt_image(theme: &ColorfulTheme, default: &str) -> Result<String, SboxError> {
@@ -238,10 +274,7 @@ fn prompt_image(theme: &ColorfulTheme, default: &str) -> Result<String, SboxErro
 }
 
 fn default_exclude_paths(pm_name: &str) -> String {
-    let common = vec![
-        "    - \".ssh/*\"",
-        "    - \".aws/*\"",
-    ];
+    let common = vec!["    - \".ssh/*\"", "    - \".aws/*\""];
     let extras: &[&str] = match pm_name {
         "npm" | "yarn" | "pnpm" | "bun" => &[
             "    - .env",
@@ -251,11 +284,7 @@ fn default_exclude_paths(pm_name: &str) -> String {
             "    - .npmrc",
             "    - .netrc",
         ],
-        "uv" | "pip" | "poetry" => &[
-            "    - .env",
-            "    - .env.local",
-            "    - .netrc",
-        ],
+        "uv" | "pip" | "poetry" => &["    - .env", "    - .env.local", "    - .netrc"],
         _ => &[],
     };
 
@@ -294,8 +323,12 @@ fn execute_interactive_advanced(theme: &ColorfulTheme) -> Result<String, SboxErr
         image_choices.push(format!("image from compose ({img})"));
     }
     image_choices.extend_from_slice(&[
-        "node".into(), "python".into(), "rust".into(), "go".into(),
-        "generic".into(), "custom image".into(),
+        "node".into(),
+        "python".into(),
+        "rust".into(),
+        "go".into(),
+        "generic".into(),
+        "custom image".into(),
     ]);
 
     let image_idx = Select::with_theme(theme)
@@ -311,27 +344,41 @@ fn execute_interactive_advanced(theme: &ColorfulTheme) -> Result<String, SboxErr
     let offset = (found_dockerfile.is_some() as usize) + (found_compose_image.is_some() as usize);
     let ecosystem_names = ["node", "python", "rust", "go", "generic", "custom"];
 
-    let (image_yaml, preset, default_writable_paths, default_dispatch) =
-        if found_dockerfile.is_some() && image_idx == 0 {
-            let df = found_dockerfile.as_deref().unwrap();
-            (format!("image:\n  build: {df}"), "custom", vec![], String::new())
-        } else if found_compose_image.is_some()
-            && image_idx == (found_dockerfile.is_some() as usize)
-        {
-            let img = found_compose_image.as_deref().unwrap();
-            (format!("image:\n  ref: {img}"), "custom", vec![], String::new())
-        } else {
-            let preset = ecosystem_names[image_idx - offset];
-            let (default_image, writable, dispatch) = match preset {
-                "node"   => ("node:22-bookworm-slim", vec!["node_modules", "package-lock.json", "dist"], node_dispatch()),
-                "python" => ("python:3.13-slim",       vec![".venv"],                                   python_dispatch()),
-                "rust"   => ("rust:1-bookworm",         vec!["target"],                                  rust_dispatch()),
-                "go"     => ("golang:1.23-bookworm",    vec![],                                          go_dispatch()),
-                _        => ("ubuntu:24.04",            vec![],                                          String::new()),
-            };
-            let img = prompt_image(theme, default_image)?;
-            (format!("image:\n  ref: {img}"), preset, writable, dispatch)
+    let (image_yaml, preset, default_writable_paths, default_dispatch) = if found_dockerfile
+        .is_some()
+        && image_idx == 0
+    {
+        let df = found_dockerfile.as_deref().unwrap();
+        (
+            format!("image:\n  build: {df}"),
+            "custom",
+            vec![],
+            String::new(),
+        )
+    } else if found_compose_image.is_some() && image_idx == (found_dockerfile.is_some() as usize) {
+        let img = found_compose_image.as_deref().unwrap();
+        (
+            format!("image:\n  ref: {img}"),
+            "custom",
+            vec![],
+            String::new(),
+        )
+    } else {
+        let preset = ecosystem_names[image_idx - offset];
+        let (default_image, writable, dispatch) = match preset {
+            "node" => (
+                "node:22-bookworm-slim",
+                vec!["node_modules", "package-lock.json", "dist"],
+                node_dispatch(),
+            ),
+            "python" => ("python:3.13-slim", vec![".venv"], python_dispatch()),
+            "rust" => ("rust:1-bookworm", vec!["target"], rust_dispatch()),
+            "go" => ("golang:1.23-bookworm", vec![], go_dispatch()),
+            _ => ("ubuntu:24.04", vec![], String::new()),
         };
+        let img = prompt_image(theme, default_image)?;
+        (format!("image:\n  ref: {img}"), preset, writable, dispatch)
+    };
 
     // ── Network ───────────────────────────────────────────────────────────────
     let network_idx = Select::with_theme(theme)
@@ -394,7 +441,8 @@ fn execute_interactive_advanced(theme: &ColorfulTheme) -> Result<String, SboxErr
         "dispatch: {}".to_string()
     };
 
-    Ok(format!("version: 1
+    Ok(format!(
+        "version: 1
 
 runtime:
 {backend_line}
@@ -434,7 +482,8 @@ profiles:
     no_new_privileges: true
 
 {dispatch_section}
-"))
+"
+    ))
 }
 
 // ── Default dispatch rules per preset (advanced mode) ────────────────────────
@@ -478,8 +527,7 @@ fn resolve_output_path(cli: &Cli, command: &InitCommand) -> Result<PathBuf, Sbox
 
 pub fn render_template(preset: &str) -> Result<String, SboxError> {
     match preset {
-        "node" => Ok(
-"version: 1
+        "node" => Ok("version: 1
 
 workspace:
   mount: /workspace
@@ -503,10 +551,10 @@ environment:
 
 package_manager:
   name: npm
-".to_string()),
+"
+        .to_string()),
 
-        "python" => Ok(
-"version: 1
+        "python" => Ok("version: 1
 
 workspace:
   mount: /workspace
@@ -527,10 +575,10 @@ environment:
 
 package_manager:
   name: uv
-".to_string()),
+"
+        .to_string()),
 
-        "rust" => Ok(
-"version: 1
+        "rust" => Ok("version: 1
 
 workspace:
   mount: /workspace
@@ -548,10 +596,10 @@ environment:
 
 package_manager:
   name: cargo
-".to_string()),
+"
+        .to_string()),
 
-        "go" => Ok(
-"version: 1
+        "go" => Ok("version: 1
 
 workspace:
   mount: /workspace
@@ -569,10 +617,10 @@ environment:
 
 package_manager:
   name: go
-".to_string()),
+"
+        .to_string()),
 
-        "generic" | "polyglot" => Ok(
-"version: 1
+        "generic" | "polyglot" => Ok("version: 1
 
 runtime:
   backend: podman
@@ -608,7 +656,8 @@ profiles:
     writable: true
 
 dispatch: {}
-".to_string()),
+"
+        .to_string()),
 
         other => Err(SboxError::UnknownPreset {
             name: other.to_string(),

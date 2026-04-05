@@ -20,22 +20,27 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
 
     match &config.runtime {
         Some(runtime) => {
-            if runtime.rootless == Some(false) {
-                if let Some(identity) = &config.identity {
-                    if identity.map_user == Some(true) {
-                        errors.push(
-                            "`identity.map_user: true` conflicts with `runtime.rootless: false`; \
+            if runtime.rootless == Some(false)
+                && let Some(identity) = &config.identity
+                && identity.map_user == Some(true)
+            {
+                errors.push(
+                    "`identity.map_user: true` conflicts with `runtime.rootless: false`; \
                              --userns keep-id is only valid in rootless Podman"
-                                .to_string(),
-                        );
-                    }
-                }
+                        .to_string(),
+                );
             }
 
             if runtime.require_pinned_image == Some(true) {
-                let global_digest_set = config.image.as_ref().and_then(|i| i.digest.as_ref()).is_some();
+                let global_digest_set = config
+                    .image
+                    .as_ref()
+                    .and_then(|i| i.digest.as_ref())
+                    .is_some();
                 if !global_digest_set {
-                    let all_sandbox_profiles_have_digest = config.profiles.values()
+                    let all_sandbox_profiles_have_digest = config
+                        .profiles
+                        .values()
                         .filter(|p| matches!(p.mode, ExecutionMode::Sandbox))
                         .all(|p| p.image.as_ref().and_then(|i| i.digest.as_ref()).is_some());
                     if !all_sandbox_profiles_have_digest {
@@ -63,9 +68,7 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
 
             for path in &workspace.writable_paths {
                 if path.trim().is_empty() {
-                    errors.push(
-                        "`workspace.writable_paths` entries must not be empty".to_string(),
-                    );
+                    errors.push("`workspace.writable_paths` entries must not be empty".to_string());
                     continue;
                 }
                 let p = std::path::Path::new(path);
@@ -73,10 +76,7 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
                     errors.push(format!(
                         "`workspace.writable_paths` entry must be a relative path: `{path}`"
                     ));
-                } else if p
-                    .components()
-                    .any(|c| c == std::path::Component::ParentDir)
-                {
+                } else if p.components().any(|c| c == std::path::Component::ParentDir) {
                     errors.push(format!(
                         "`workspace.writable_paths` entry must not contain `..`: `{path}`"
                     ));
@@ -85,9 +85,7 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
 
             for pattern in &workspace.exclude_paths {
                 if pattern.trim().is_empty() {
-                    errors.push(
-                        "`workspace.exclude_paths` entries must not be empty".to_string(),
-                    );
+                    errors.push("`workspace.exclude_paths` entries must not be empty".to_string());
                     continue;
                 }
                 // Strip the leading **/ glob prefix before checking for absolute paths
@@ -220,13 +218,12 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
 
         if let Some(crate::config::model::CapabilitiesSpec::Keyword(keyword)) =
             &profile.capabilities
+            && keyword != "drop-all"
         {
-            if keyword != "drop-all" {
-                errors.push(format!(
+            errors.push(format!(
                     "profile `{name}` has unknown capabilities keyword `{keyword}`; \
                      use `drop-all`, a list `[CAP_NAME, ...]`, or a structured form `{{ drop: [...], add: [...] }}`"
                 ));
-            }
         }
 
         for domain in &profile.network_allow {
@@ -244,8 +241,16 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
         }
 
         if profile.require_pinned_image == Some(true) {
-            let has_digest = profile.image.as_ref().and_then(|i| i.digest.as_ref()).is_some()
-                || config.image.as_ref().and_then(|i| i.digest.as_ref()).is_some();
+            let has_digest = profile
+                .image
+                .as_ref()
+                .and_then(|i| i.digest.as_ref())
+                .is_some()
+                || config
+                    .image
+                    .as_ref()
+                    .and_then(|i| i.digest.as_ref())
+                    .is_some();
             if !has_digest {
                 errors.push(format!(
                     "profile `{name}` sets `require_pinned_image: true` but no image digest is configured (set `image.digest` globally or in the profile's image override)"
@@ -291,17 +296,37 @@ pub fn collect_config_warnings(config: &Config) -> Vec<String> {
             ));
         }
     };
-    if let Some(image) = &config.image {
-        if let Some(r) = &image.reference {
+    if let Some(image) = &config.image
+        && let Some(r) = &image.reference
+    {
+        check_ref(r, &mut warnings);
+    }
+    for (_name, profile) in &config.profiles {
+        if let Some(image) = &profile.image
+            && let Some(r) = &image.reference
+        {
             check_ref(r, &mut warnings);
         }
     }
-    for (_name, profile) in &config.profiles {
-        if let Some(image) = &profile.image {
-            if let Some(r) = &image.reference {
-                check_ref(r, &mut warnings);
-            }
-        }
+
+    // Warn when Docker is used without rootless mode — files written inside the container
+    // (node_modules, .venv, target/, etc.) will be owned by root on the host, requiring
+    // sudo or a privileged docker run to delete them.
+    if let Some(runtime) = &config.runtime
+        && matches!(
+            runtime.backend,
+            Some(crate::config::model::BackendKind::Docker)
+        )
+        && runtime.rootless != Some(true)
+    {
+        warnings.push(
+            "backend is `docker` without `rootless: true` — files written inside the \
+                 container (e.g. node_modules, .venv) will be owned by root on the host. \
+                 To clean them up: \
+                 `docker run --rm -v $PWD:/w <image> chown -R $(id -u):$(id -g) /w` \
+                 or enable rootless Docker and set `rootless: true`."
+                .to_string(),
+        );
     }
 
     // Warn when an install profile uses network: on without network_allow.
@@ -353,9 +378,19 @@ pub fn emit_config_warnings(config: &Config) {
 
 fn looks_like_credential(path: &str) -> bool {
     const PATTERNS: &[&str] = &[
-        "npmrc", "netrc", "pypirc", "token", "secret", "credential",
-        "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-        ".aws/", ".ssh/", "auth.json",
+        "npmrc",
+        "netrc",
+        "pypirc",
+        "token",
+        "secret",
+        "credential",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        ".aws/",
+        ".ssh/",
+        "auth.json",
     ];
     let lower = path.to_lowercase();
     PATTERNS.iter().any(|p| lower.contains(p))
@@ -446,7 +481,14 @@ fn is_sensitive_host_path(path: &Path) -> bool {
         "/var/run/podman/podman.sock",
         "/run/podman/podman.sock",
     ];
-    const PREFIX_PATHS: &[&str] = &[".ssh", ".aws", ".kube", ".config/gcloud", ".gnupg", ".docker"];
+    const PREFIX_PATHS: &[&str] = &[
+        ".ssh",
+        ".aws",
+        ".kube",
+        ".config/gcloud",
+        ".gnupg",
+        ".docker",
+    ];
     const FILE_PATHS: &[&str] = &[
         ".git-credentials",
         ".npmrc",
@@ -506,10 +548,10 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-            role: None,
-            lockfile_files: Vec::new(),
-            pre_run: Vec::new(),
-            network_allow: Vec::new(),
+                role: None,
+                lockfile_files: Vec::new(),
+                pre_run: Vec::new(),
+                network_allow: Vec::new(),
                 ports: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),

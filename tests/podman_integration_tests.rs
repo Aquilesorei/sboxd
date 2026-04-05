@@ -22,7 +22,9 @@ fn require_podman_tests() -> bool {
 }
 
 fn signed_verification_test_image() -> Option<String> {
-    std::env::var("SBOX_SIGNED_TEST_IMAGE").ok().filter(|value| !value.is_empty())
+    std::env::var("SBOX_SIGNED_TEST_IMAGE")
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 fn require_signed_verification_test() -> Option<String> {
@@ -102,8 +104,7 @@ fn wait_for_http_200(host_port: u16) -> bool {
         if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", host_port)) {
             let _ = stream.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n");
             let mut response = String::new();
-            if stream.read_to_string(&mut response).is_ok()
-                && response.starts_with("HTTP/1.0 200")
+            if stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.0 200")
             {
                 return true;
             }
@@ -203,7 +204,17 @@ fn podman_reusable_session_can_be_reused_and_cleaned() {
     let project_dir = repo_root().join("examples/python-smoke");
     let config_path = project_dir.join("reuse-sbox.yaml");
 
-    let plan = run_sbox(&project_dir, &["--config", "reuse-sbox.yaml", "plan", "--", "python", "--version"]);
+    let plan = run_sbox(
+        &project_dir,
+        &[
+            "--config",
+            "reuse-sbox.yaml",
+            "plan",
+            "--",
+            "python",
+            "--version",
+        ],
+    );
     assert!(
         plan.status.success(),
         "plan should succeed: {}",
@@ -213,8 +224,17 @@ fn podman_reusable_session_can_be_reused_and_cleaned() {
 
     let _ = run_podman(&["rm", "-f", &session_name]);
 
-    let first_run =
-        run_sbox(&project_dir, &["--config", "reuse-sbox.yaml", "run", "--", "python", "--version"]);
+    let first_run = run_sbox(
+        &project_dir,
+        &[
+            "--config",
+            "reuse-sbox.yaml",
+            "run",
+            "--",
+            "python",
+            "--version",
+        ],
+    );
     assert!(
         first_run.status.success(),
         "first reusable run should succeed: {}",
@@ -227,10 +247,22 @@ fn podman_reusable_session_can_be_reused_and_cleaned() {
         "reusable container should exist after first run: {}",
         String::from_utf8_lossy(&inspect_running.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&inspect_running.stdout).trim(), "true");
+    assert_eq!(
+        String::from_utf8_lossy(&inspect_running.stdout).trim(),
+        "true"
+    );
 
-    let second_run =
-        run_sbox(&project_dir, &["--config", "reuse-sbox.yaml", "run", "--", "python", "--version"]);
+    let second_run = run_sbox(
+        &project_dir,
+        &[
+            "--config",
+            "reuse-sbox.yaml",
+            "run",
+            "--",
+            "python",
+            "--version",
+        ],
+    );
     assert!(
         second_run.status.success(),
         "second reusable run should succeed: {}",
@@ -276,7 +308,9 @@ fn podman_reusable_session_exposes_configured_ports() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "plan",
             "--",
             "python",
@@ -295,7 +329,9 @@ fn podman_reusable_session_exposes_configured_ports() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "sh",
@@ -318,7 +354,9 @@ fn podman_reusable_session_exposes_configured_ports() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "clean",
         ],
     );
@@ -347,7 +385,9 @@ fn podman_can_run_with_real_signature_verification() {
         image = image
     );
     let config_path = write_temp_config(&temp, &config);
-    let config_arg = config_path.to_str().expect("temp config path should be UTF-8");
+    let config_arg = config_path
+        .to_str()
+        .expect("temp config path should be UTF-8");
 
     let doctor = run_sbox(&root, &["--config", config_arg, "doctor"]);
     assert!(
@@ -364,15 +404,7 @@ fn podman_can_run_with_real_signature_verification() {
 
     let run = run_sbox(
         &root,
-        &[
-            "--config",
-            config_arg,
-            "run",
-            "--",
-            "sh",
-            "-lc",
-            "true",
-        ],
+        &["--config", config_arg, "run", "--", "sh", "-lc", "true"],
     );
     assert!(
         run.status.success(),

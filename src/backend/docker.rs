@@ -6,7 +6,9 @@ use std::process::{Command, ExitCode, Stdio};
 use crate::backend::podman::CLOUD_METADATA_HOSTNAMES;
 
 use crate::error::SboxError;
-use crate::resolve::{ExecutionPlan, ResolvedImageSource, ResolvedMount, ResolvedSecret, ResolvedUser};
+use crate::resolve::{
+    ExecutionPlan, ResolvedImageSource, ResolvedMount, ResolvedSecret, ResolvedUser,
+};
 
 pub fn execute(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
     if plan.policy.reuse_container {
@@ -697,7 +699,11 @@ fn parse_proc_id(status: &str, key: &str) -> u32 {
         .unwrap_or(0)
 }
 
-fn ensure_built_image(recipe_path: &Path, tag: &str, workspace_root: &Path) -> Result<(), SboxError> {
+fn ensure_built_image(
+    recipe_path: &Path,
+    tag: &str,
+    workspace_root: &Path,
+) -> Result<(), SboxError> {
     // docker image inspect exits 0 if the image exists, non-zero if not.
     let exists_status = Command::new("docker")
         .args(["image", "inspect", "--format", "", tag])
@@ -761,9 +767,8 @@ mod tests {
     use super::{build_run_args, current_uid_gid};
     use crate::config::model::ExecutionMode;
     use crate::resolve::{
-        CwdMapping, ExecutionPlan, ImageTrust, ModeSource, ProfileSource,
-        ResolvedEnvironment, ResolvedImage, ResolvedImageSource, ResolvedPolicy, ResolvedUser,
-        ResolvedWorkspace,
+        CwdMapping, ExecutionPlan, ImageTrust, ModeSource, ProfileSource, ResolvedEnvironment,
+        ResolvedImage, ResolvedImageSource, ResolvedPolicy, ResolvedUser, ResolvedWorkspace,
     };
     use std::path::PathBuf;
 
@@ -894,9 +899,7 @@ mod tests {
     fn network_allow_breaks_dns_and_injects_resolved_hosts() {
         let mut plan = sample_plan();
         plan.policy.network = "on".into();
-        plan.policy.network_allow = vec![
-            ("registry.npmjs.org".into(), "104.16.0.0".into()),
-        ];
+        plan.policy.network_allow = vec![("registry.npmjs.org".into(), "104.16.0.0".into())];
         let args = build_run_args(&plan, "node:22").expect("args should build");
         let joined = args.join(" ");
         // DNS must be broken to the black-hole address
@@ -920,7 +923,10 @@ mod tests {
         let args = build_run_args(&plan, "node:22").expect("args should build");
         let joined = args.join(" ");
         // No DNS break (no allow-list)
-        assert!(!joined.contains("--dns 192.0.2.1"), "DNS should not be broken without allow-list");
+        assert!(
+            !joined.contains("--dns 192.0.2.1"),
+            "DNS should not be broken without allow-list"
+        );
         // But metadata hosts should still be blocked
         assert!(
             joined.contains("--add-host metadata.google.internal:192.0.2.1"),

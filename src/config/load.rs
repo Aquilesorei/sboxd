@@ -42,10 +42,11 @@ pub fn load_config(options: &LoadOptions) -> Result<LoadedConfig, SboxError> {
         source,
     })?;
 
-    let mut config = serde_yaml::from_str::<Config>(&raw).map_err(|source| SboxError::ConfigParse {
-        path: config_path.clone(),
-        source,
-    })?;
+    let mut config =
+        serde_yaml::from_str::<Config>(&raw).map_err(|source| SboxError::ConfigParse {
+            path: config_path.clone(),
+            source,
+        })?;
 
     super::package_manager::elaborate(&mut config)?;
     validate_config(&config)?;

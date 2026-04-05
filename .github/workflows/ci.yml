@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build
+
+      - name: Unit tests
+        run: cargo test --lib
+
+      - name: Integration tests (no container runtime required)
+        run: cargo test --tests --exclude-ignored
+        env:
+          # Exclude tests that require a live container runtime
+          SBOX_RUN_PODMAN_TESTS: ""
+          SBOX_RUN_DOCKER_TESTS: ""
+
+  test-docker:
+    name: Docker integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build
+
+      - name: Pull images (warm cache)
+        run: |
+          docker pull python:3.13-slim &
+          docker pull node:22-bookworm-slim &
+          wait
+
+      - name: Docker integration tests
+        run: cargo test --test docker_integration_tests
+        env:
+          SBOX_RUN_DOCKER_TESTS: "1"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy -- -D warnings

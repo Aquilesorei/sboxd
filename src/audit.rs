@@ -60,11 +60,7 @@ fn audit_command_for(pm_name: &str) -> (&'static str, &'static [&'static str], &
             &["npm", "audit"],
             "yarn is required. Install from https://yarnpkg.com",
         ),
-        "pnpm" => (
-            "pnpm",
-            &["audit"],
-            "pnpm is required: npm install -g pnpm",
-        ),
+        "pnpm" => ("pnpm", &["audit"], "pnpm is required: npm install -g pnpm"),
         "bun" => (
             // bun does not have a native audit command; delegate to npm audit which can read
             // package-lock.json or bun.lock

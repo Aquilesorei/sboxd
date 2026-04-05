@@ -142,7 +142,8 @@ fn run_podman_checks(
             if configured_rootless == Some(false) {
                 checks.push(CheckResult::warn(
                     "rootless-config",
-                    "config sets `runtime.rootless: false` but Podman is running in rootless mode".to_string(),
+                    "config sets `runtime.rootless: false` but Podman is running in rootless mode"
+                        .to_string(),
                 ));
             }
         }
@@ -179,10 +180,7 @@ fn run_podman_checks(
     }
 }
 
-fn run_docker_checks(
-    loaded: Option<&crate::config::LoadedConfig>,
-    checks: &mut Vec<CheckResult>,
-) {
+fn run_docker_checks(loaded: Option<&crate::config::LoadedConfig>, checks: &mut Vec<CheckResult>) {
     match run_capture(Command::new("docker").arg("--version")) {
         Err(detail) => {
             checks.push(CheckResult::fail("backend", detail));
@@ -194,10 +192,7 @@ fn run_docker_checks(
         )),
     }
 
-    match run_capture(
-        Command::new("docker")
-            .args(["info", "--format", "{{.ServerVersion}}"]),
-    ) {
+    match run_capture(Command::new("docker").args(["info", "--format", "{{.ServerVersion}}"])) {
         Ok(version) => checks.push(CheckResult::pass(
             "daemon",
             format!("docker daemon is running (server {})", version.trim()),
@@ -233,7 +228,10 @@ fn signature_verification_check(config: &crate::config::model::Config) -> CheckR
             } else {
                 CheckResult::pass(
                     "signature-verify",
-                    format!("available via {} (not requested by config)", policy.display()),
+                    format!(
+                        "available via {} (not requested by config)",
+                        policy.display()
+                    ),
                 )
             }
         }
@@ -248,7 +246,10 @@ fn signature_verification_check(config: &crate::config::model::Config) -> CheckR
             if requested {
                 CheckResult::fail("signature-verify", detail)
             } else {
-                CheckResult::warn("signature-verify", format!("not currently usable: {detail}"))
+                CheckResult::warn(
+                    "signature-verify",
+                    format!("not currently usable: {detail}"),
+                )
             }
         }
         Err(error) => {
@@ -501,7 +502,12 @@ fn credential_exposure_warnings(loaded: &crate::config::LoadedConfig) -> Vec<Che
 
     for pattern in CREDENTIAL_PATTERNS {
         let mut found = Vec::new();
-        collect_credential_files(&loaded.workspace_root, &loaded.workspace_root, pattern, &mut found);
+        collect_credential_files(
+            &loaded.workspace_root,
+            &loaded.workspace_root,
+            pattern,
+            &mut found,
+        );
         for host_path in found {
             if let Ok(rel) = host_path.strip_prefix(&loaded.workspace_root) {
                 let rel_str = rel.to_string_lossy();
@@ -557,12 +563,12 @@ fn collect_credential_files(
                 continue;
             }
             collect_credential_files(workspace_root, &path, pattern, out);
-        } else if file_type.is_file() {
-            if let Ok(rel) = path.strip_prefix(workspace_root) {
-                let rel_str = rel.to_string_lossy();
-                if crate::resolve::exclude_pattern_matches(&rel_str, pattern) {
-                    out.push(path);
-                }
+        } else if file_type.is_file()
+            && let Ok(rel) = path.strip_prefix(workspace_root)
+        {
+            let rel_str = rel.to_string_lossy();
+            if crate::resolve::exclude_pattern_matches(&rel_str, pattern) {
+                out.push(path);
             }
         }
     }
@@ -702,7 +708,9 @@ mod tests {
         risky_config_warnings, scan_workspace_artifacts, workspace_state_warnings,
     };
     use crate::config::LoadedConfig;
-    use crate::config::model::{Config, EnvironmentConfig, MountConfig, MountType, WorkspaceConfig};
+    use crate::config::model::{
+        Config, EnvironmentConfig, MountConfig, MountType, WorkspaceConfig,
+    };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::process::ExitCode;
@@ -803,10 +811,10 @@ mod tests {
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
-            role: None,
-            lockfile_files: Vec::new(),
-            pre_run: Vec::new(),
-            network_allow: Vec::new(),
+                role: None,
+                lockfile_files: Vec::new(),
+                pre_run: Vec::new(),
+                network_allow: Vec::new(),
                 ports: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
@@ -973,10 +981,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join(".env"), "SECRET=hunter2").unwrap();
 
-        let loaded = make_loaded_with_workspace(
-            root.path().to_path_buf(),
-            vec![".env".to_string()],
-        );
+        let loaded =
+            make_loaded_with_workspace(root.path().to_path_buf(), vec![".env".to_string()]);
         let warnings = credential_exposure_warnings(&loaded);
 
         assert!(

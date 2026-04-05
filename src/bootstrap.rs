@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use crate::cli::Cli;
-use crate::config::{LoadOptions, load_config};
 use crate::config::model::ExecutionMode;
+use crate::config::{LoadOptions, load_config};
 use crate::error::SboxError;
 use crate::exec::{execute_host, execute_sandbox, run_pre_run_commands, validate_execution_safety};
 use crate::resolve::{ResolutionTarget, resolve_execution_plan};
@@ -18,12 +18,16 @@ pub fn execute(cli: &Cli) -> Result<ExitCode, SboxError> {
         config: cli.config.clone(),
     })?;
 
-    let pm = loaded.config.package_manager.as_ref().ok_or_else(|| SboxError::ConfigValidation {
-        message: "sbox bootstrap requires `package_manager:` in sbox.yaml\n\
+    let pm = loaded
+        .config
+        .package_manager
+        .as_ref()
+        .ok_or_else(|| SboxError::ConfigValidation {
+            message: "sbox bootstrap requires `package_manager:` in sbox.yaml\n\
                   for manually-configured profiles, generate the lockfile directly:\n\
                     sbox run -- <pm> lock  (or equivalent)"
-            .to_string(),
-    })?;
+                .to_string(),
+        })?;
 
     let bootstrap_cmd = bootstrap_command_for(&pm.name)?;
 
@@ -34,7 +38,10 @@ pub fn execute(cli: &Cli) -> Result<ExitCode, SboxError> {
     validate_execution_safety(&plan, false)?;
     run_pre_run_commands(&plan)?;
 
-    eprintln!("sbox bootstrap: generating {} lockfile inside sandbox...", pm.name);
+    eprintln!(
+        "sbox bootstrap: generating {} lockfile inside sandbox...",
+        pm.name
+    );
 
     let exit = match plan.mode {
         ExecutionMode::Host => execute_host(&plan)?,
@@ -43,10 +50,7 @@ pub fn execute(cli: &Cli) -> Result<ExitCode, SboxError> {
 
     if exit == ExitCode::SUCCESS {
         eprintln!("\nlockfile generated.");
-        eprintln!(
-            "next: sbox run -- {}",
-            rebuild_hint(&pm.name)
-        );
+        eprintln!("next: sbox run -- {}", rebuild_hint(&pm.name));
     }
 
     Ok(exit)
@@ -55,12 +59,12 @@ pub fn execute(cli: &Cli) -> Result<ExitCode, SboxError> {
 /// Maps package manager names to their lockfile-generation command (no scripts executed).
 fn bootstrap_command_for(pm_name: &str) -> Result<Vec<String>, SboxError> {
     let cmd: &[&str] = match pm_name {
-        "npm"    => &["npm",    "install", "--ignore-scripts"],
-        "yarn"   => &["yarn",   "install", "--ignore-scripts"],
-        "pnpm"   => &["pnpm",   "install", "--ignore-scripts"],
-        "bun"    => &["bun",    "install", "--no-scripts"],
-        "uv"     => &["uv",     "lock"],
-        "pip"    => {
+        "npm" => &["npm", "install", "--ignore-scripts"],
+        "yarn" => &["yarn", "install", "--ignore-scripts"],
+        "pnpm" => &["pnpm", "install", "--ignore-scripts"],
+        "bun" => &["bun", "install", "--no-scripts"],
+        "uv" => &["uv", "lock"],
+        "pip" => {
             // pip has no lockfile-only mode. Direct users to pip-compile (pip-tools) or uv.
             return Err(SboxError::ConfigValidation {
                 message: "pip does not support lockfile-only bootstrap.\n\
@@ -72,15 +76,15 @@ fn bootstrap_command_for(pm_name: &str) -> Result<Vec<String>, SboxError> {
             });
         }
         "poetry" => &["poetry", "lock"],
-        "cargo"  => &["cargo",  "fetch"],
-        "go"     => &["go",     "mod", "download"],
+        "cargo" => &["cargo", "fetch"],
+        "go" => &["go", "mod", "download"],
         _ => {
             return Err(SboxError::ConfigValidation {
                 message: format!(
                     "no bootstrap command known for package manager `{pm_name}`; \
                      generate the lockfile manually and run `sbox run` directly"
                 ),
-            })
+            });
         }
     };
     Ok(cmd.iter().map(|s| s.to_string()).collect())
@@ -89,15 +93,15 @@ fn bootstrap_command_for(pm_name: &str) -> Result<Vec<String>, SboxError> {
 /// Suggests the next command to run after bootstrap (runs scripts with network off).
 fn rebuild_hint(pm_name: &str) -> &'static str {
     match pm_name {
-        "npm"    => "npm rebuild                  # runs install scripts, network off",
-        "yarn"   => "yarn install                 # runs install scripts, network off",
-        "pnpm"   => "pnpm rebuild                 # runs install scripts, network off",
-        "bun"    => "bun install                  # runs install scripts, network off",
-        "uv"     => "uv sync                      # install from lockfile, network off",
-        "pip"    => "pip install -r requirements.txt  # install from requirements",
+        "npm" => "npm rebuild                  # runs install scripts, network off",
+        "yarn" => "yarn install                 # runs install scripts, network off",
+        "pnpm" => "pnpm rebuild                 # runs install scripts, network off",
+        "bun" => "bun install                  # runs install scripts, network off",
+        "uv" => "uv sync                      # install from lockfile, network off",
+        "pip" => "pip install -r requirements.txt  # install from requirements",
         "poetry" => "poetry install               # install from lockfile, network off",
-        "cargo"  => "cargo build                  # compile from fetched sources",
-        "go"     => "go build ./...               # compile from downloaded modules",
-        _        => "<install-command>",
+        "cargo" => "cargo build                  # compile from fetched sources",
+        "go" => "go build ./...               # compile from downloaded modules",
+        _ => "<install-command>",
     }
 }

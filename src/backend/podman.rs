@@ -12,16 +12,18 @@ use crate::resolve::{
 /// These resolve to 192.0.2.1 (non-routable) inside the container.
 /// Does NOT block hardcoded-IP connections (e.g. direct TCP to 169.254.169.254).
 pub(crate) const CLOUD_METADATA_HOSTNAMES: &[&str] = &[
-    "metadata.google.internal",       // GCP
-    "metadata.internal",              // GCP alias
-    "instance-data.ec2.internal",     // AWS
-    "169.254.169.254",                // hostname-style lookup (not the raw IP)
-    "100.100.100.200",                // Alibaba Cloud
+    "metadata.google.internal",   // GCP
+    "metadata.internal",          // GCP alias
+    "instance-data.ec2.internal", // AWS
+    "169.254.169.254",            // hostname-style lookup (not the raw IP)
+    "100.100.100.200",            // Alibaba Cloud
 ];
 
 #[derive(Debug, Clone)]
 pub(crate) enum SignatureVerificationSupport {
-    Available { policy: PathBuf },
+    Available {
+        policy: PathBuf,
+    },
     Unavailable {
         policy: Option<PathBuf>,
         reason: String,
@@ -185,8 +187,8 @@ fn run_signature_verification(reference: &str, policy: &Path) -> Result<(), Sbox
     }
 }
 
-pub(crate) fn inspect_signature_verification_support(
-) -> Result<SignatureVerificationSupport, SboxError> {
+pub(crate) fn inspect_signature_verification_support()
+-> Result<SignatureVerificationSupport, SboxError> {
     match Command::new("skopeo")
         .arg("--version")
         .stdin(Stdio::null())
@@ -219,9 +221,7 @@ pub(crate) fn inspect_signature_verification_support(
     if !policy_supports_signature_verification(&policy)? {
         return Ok(SignatureVerificationSupport::Unavailable {
             policy: Some(policy.clone()),
-            reason: format!(
-                "policy does not enforce signature verification"
-            ),
+            reason: "policy does not enforce signature verification".to_string(),
         });
     }
 
@@ -263,7 +263,9 @@ fn policy_supports_signature_verification(path: &Path) -> Result<bool, SboxError
     }
     if let Some(transports) = json.get("transports").and_then(|value| value.as_object()) {
         for transport_name in ["docker", "docker-daemon"] {
-            if let Some(scopes) = transports.get(transport_name).and_then(|value| value.as_object())
+            if let Some(scopes) = transports
+                .get(transport_name)
+                .and_then(|value| value.as_object())
             {
                 for requirements in scopes.values() {
                     candidates.push(requirements);
@@ -272,7 +274,9 @@ fn policy_supports_signature_verification(path: &Path) -> Result<bool, SboxError
         }
     }
 
-    Ok(candidates.into_iter().any(requirements_enable_signature_verification))
+    Ok(candidates
+        .into_iter()
+        .any(requirements_enable_signature_verification))
 }
 
 fn requirements_enable_signature_verification(value: &serde_json::Value) -> bool {

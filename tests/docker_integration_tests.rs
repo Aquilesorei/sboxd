@@ -69,7 +69,9 @@ fn docker_run_preserves_workspace_cwd_and_env() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "python",
@@ -122,7 +124,9 @@ fn docker_network_off_blocks_outbound_connections() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "python",
@@ -160,7 +164,9 @@ fn docker_cloud_metadata_endpoint_blocked_with_network_on() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "python",
@@ -197,7 +203,9 @@ fn docker_network_allow_blocks_unlisted_hosts_via_dns_break() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "python",
@@ -234,7 +242,9 @@ fn docker_denied_env_vars_not_visible_in_container() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "python",
@@ -278,7 +288,9 @@ fn docker_workspace_root_is_read_only_without_writable() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "run",
             "--",
             "python",
@@ -315,7 +327,9 @@ fn docker_npm_preset_plan_shows_preset_profile_and_token_denials() {
         &root,
         &[
             "--config",
-            config_path.to_str().expect("temp config path should be UTF-8"),
+            config_path
+                .to_str()
+                .expect("temp config path should be UTF-8"),
             "plan",
             "--",
             "npm",
