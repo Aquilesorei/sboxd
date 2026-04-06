@@ -35,6 +35,7 @@ pub fn execute(cli: &Cli, command: &DoctorCommand) -> Result<ExitCode, crate::er
         Backend::Podman => run_podman_checks(cli, loaded.as_ref(), &mut checks),
         Backend::Docker => run_docker_checks(loaded.as_ref(), &mut checks),
     }
+    checks.extend(shim_health_checks());
 
     print_report(&checks);
     Ok(determine_exit_code(&checks, command.strict))
@@ -280,6 +281,44 @@ fn root_command_dispatch_warnings(
             matching_patterns.join(", ")
         ),
     )]
+}
+
+fn shim_health_checks() -> Vec<CheckResult> {
+    // Resolve the default shim dir the same way `sbox shim` does.
+    let shim_dir = match crate::platform::home_dir() {
+        Some(home) => home.join(".local").join("bin"),
+        None => return vec![CheckResult::warn(
+            "shims",
+            "cannot determine home directory — skipping shim check".to_string(),
+        )],
+    };
+
+    if !shim_dir.exists() {
+        return vec![CheckResult::warn(
+            "shims",
+            format!(
+                "shim directory {} does not exist — run `sbox shim` to create shims",
+                shim_dir.display()
+            ),
+        )];
+    }
+
+    let (ok, problems) = crate::shim::verify_shims(&shim_dir);
+    let total = ok + problems;
+
+    if problems == 0 {
+        vec![CheckResult::pass(
+            "shims",
+            format!("{ok}/{total} shims active and correctly ordered in PATH"),
+        )]
+    } else {
+        vec![CheckResult::warn(
+            "shims",
+            format!(
+                "{problems}/{total} shim(s) missing or shadowed — run `sbox shim --verify` for details",
+            ),
+        )]
+    }
 }
 
 fn signature_verification_check(config: &crate::config::model::Config) -> CheckResult {

@@ -184,6 +184,42 @@ static PRESETS: &[(&str, Preset)] = &[
             default_env: &[],
         },
     ),
+    (
+        "composer",
+        Preset {
+            install_patterns: &["composer install*", "composer update*", "composer require*"],
+            build_patterns: &[],
+            install_writable: &["vendor"],
+            build_writable: &[],
+            network_allow: &["repo.packagist.org", "packagist.org"],
+            lockfile_files: &["composer.lock"],
+            publish_token_envs: &["COMPOSER_AUTH", "PACKAGIST_TOKEN"],
+            credential_files: &["auth.json"],
+            default_image: "composer:2",
+            default_env: &[
+                // Disable interactive prompts inside the container.
+                ("COMPOSER_NO_INTERACTION", "1"),
+            ],
+        },
+    ),
+    (
+        "bundler",
+        Preset {
+            install_patterns: &["bundle install*", "bundle update*", "bundle add*"],
+            build_patterns: &["bundle exec rake*", "bundle exec rspec*"],
+            install_writable: &["vendor/bundle", ".bundle"],
+            build_writable: &["tmp", "log"],
+            network_allow: &["rubygems.org", "index.rubygems.org"],
+            lockfile_files: &["Gemfile.lock"],
+            publish_token_envs: &["GEM_HOST_API_KEY", "RUBYGEMS_API_KEY"],
+            credential_files: &[".gem/credentials"],
+            default_image: "ruby:3-slim",
+            default_env: &[
+                // Install gems into vendor/bundle so they stay within the workspace mount.
+                ("BUNDLE_PATH", "vendor/bundle"),
+            ],
+        },
+    ),
 ];
 
 fn lookup_preset(name: &str) -> Option<&'static Preset> {
@@ -311,7 +347,7 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
 
     let preset = lookup_preset(&pm.name).ok_or_else(|| SboxError::ConfigValidation {
         message: format!(
-            "unknown package_manager name `{}`; valid names: npm, yarn, pnpm, bun, uv, pip, poetry, cargo, go",
+            "unknown package_manager name `{}`; valid names: npm, yarn, pnpm, bun, uv, pip, poetry, cargo, go, composer, bundler",
             pm.name
         ),
     })?;
@@ -707,5 +743,55 @@ mod tests {
 
         let deny = &config.environment.as_ref().unwrap().deny;
         assert!(deny.contains(&"CARGO_REGISTRY_TOKEN".to_string()));
+    }
+
+    #[test]
+    fn test_composer_generates_install_profile_with_vendor() {
+        let mut config = base_config_with_pm("composer");
+        elaborate(&mut config).unwrap();
+
+        let profile = config.profiles.get("pm-composer-install").unwrap();
+        assert_eq!(profile.network.as_deref(), Some("on"));
+        assert!(profile
+            .writable_paths
+            .as_deref()
+            .unwrap()
+            .contains(&"vendor".to_string()));
+        assert!(config
+            .environment
+            .as_ref()
+            .unwrap()
+            .deny
+            .contains(&"COMPOSER_AUTH".to_string()));
+    }
+
+    #[test]
+    fn test_bundler_generates_install_profile_with_vendor_bundle() {
+        let mut config = base_config_with_pm("bundler");
+        elaborate(&mut config).unwrap();
+
+        let profile = config.profiles.get("pm-bundler-install").unwrap();
+        assert_eq!(profile.network.as_deref(), Some("on"));
+        assert!(profile
+            .writable_paths
+            .as_deref()
+            .unwrap()
+            .iter()
+            .any(|p| p.contains("vendor/bundle")));
+        assert!(config
+            .environment
+            .as_ref()
+            .unwrap()
+            .deny
+            .contains(&"GEM_HOST_API_KEY".to_string()));
+    }
+
+    #[test]
+    fn test_bundler_sets_bundle_path_env() {
+        let mut config = base_config_with_pm("bundler");
+        elaborate(&mut config).unwrap();
+
+        let set = &config.environment.as_ref().unwrap().set;
+        assert_eq!(set.get("BUNDLE_PATH").map(String::as_str), Some("vendor/bundle"));
     }
 }

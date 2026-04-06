@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -52,6 +53,7 @@ pub enum Commands {
     Shim(ShimCommand),
     Bootstrap(BootstrapCommand),
     Audit(AuditCommand),
+    Completions(CompletionsCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -68,6 +70,11 @@ pub struct InitCommand {
     /// Launch an interactive wizard to generate sbox.yaml
     #[arg(long, short = 'i')]
     pub interactive: bool,
+
+    /// Auto-detect the package manager from an existing lockfile in the current directory
+    /// and generate a matching preset config (skips the wizard)
+    #[arg(long, conflicts_with_all = ["preset", "interactive"])]
+    pub from_lockfile: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -105,6 +112,10 @@ pub struct ShellCommand {
 pub struct PlanCommand {
     #[arg(long)]
     pub show_command: bool,
+
+    /// Run the ecosystem's audit tool (npm audit, cargo audit, etc.) and append findings
+    #[arg(long)]
+    pub audit: bool,
 
     /// Omit to show the policy for the profile selected by --profile without a specific command.
     #[arg(num_args = 0.., allow_hyphen_values = true)]
@@ -163,6 +174,20 @@ pub struct AuditCommand {
 #[derive(Debug, Clone, Args, Default)]
 pub struct BootstrapCommand {}
 
+/// Print shell completion script to stdout.
+/// Pipe the output to your shell's completion directory, e.g.:
+///   sbox completions bash > /etc/bash_completion.d/sbox
+///   sbox completions zsh  > ~/.zsh/completions/_sbox
+#[derive(Debug, Clone, Args)]
+pub struct CompletionsCommand {
+    pub shell: Shell,
+}
+
+pub fn generate_completions(shell: Shell) {
+    use std::io;
+    clap_complete::generate(shell, &mut Cli::command(), "sbox", &mut io::stdout());
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct ShimCommand {
     /// Directory to write shim scripts into (default: ~/.local/bin)
@@ -176,4 +201,8 @@ pub struct ShimCommand {
     /// Print what would be created without writing anything
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Check whether shims are installed and appear in PATH before the real binaries; exit 1 if any are missing or shadowed
+    #[arg(long)]
+    pub verify: bool,
 }

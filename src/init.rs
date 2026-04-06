@@ -12,6 +12,10 @@ pub fn execute(cli: &Cli, command: &InitCommand) -> Result<ExitCode, SboxError> 
         return execute_interactive(cli, command);
     }
 
+    if command.from_lockfile {
+        return execute_from_lockfile(cli, command);
+    }
+
     let target = resolve_output_path(cli, command)?;
     if target.exists() && !command.force {
         return Err(SboxError::InitConfigExists { path: target });
@@ -33,6 +37,70 @@ pub fn execute(cli: &Cli, command: &InitCommand) -> Result<ExitCode, SboxError> 
 
     println!("created {}", target.display());
     Ok(ExitCode::SUCCESS)
+}
+
+fn execute_from_lockfile(cli: &Cli, command: &InitCommand) -> Result<ExitCode, SboxError> {
+    let cwd = std::env::current_dir()
+        .map_err(|source| SboxError::CurrentDirectory { source })?;
+
+    let detected = detect_lockfile_preset(&cwd);
+    let preset = detected.ok_or_else(|| SboxError::ConfigValidation {
+        message: "no recognised lockfile found in the current directory. \
+                  Supported: package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock(b), \
+                  uv.lock, requirements.txt, poetry.lock, Cargo.lock, go.sum, \
+                  composer.lock, Gemfile.lock"
+            .to_string(),
+    })?;
+
+    println!("detected lockfile → using preset: {preset}");
+
+    let target = resolve_output_path(cli, command)?;
+    if target.exists() && !command.force {
+        return Err(SboxError::InitConfigExists { path: target });
+    }
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|source| SboxError::InitWrite {
+            path: target.clone(),
+            source,
+        })?;
+    }
+
+    let template = render_template(preset)?;
+    fs::write(&target, template).map_err(|source| SboxError::InitWrite {
+        path: target.clone(),
+        source,
+    })?;
+
+    println!("created {}", target.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Maps a lockfile filename to its preset name. Checked in priority order — more specific
+/// lockfiles (uv.lock, poetry.lock) are checked before generic ones (requirements.txt).
+fn detect_lockfile_preset(dir: &Path) -> Option<&'static str> {
+    const LOCKFILE_MAP: &[(&str, &str)] = &[
+        ("package-lock.json", "npm"),
+        ("npm-shrinkwrap.json", "npm"),
+        ("yarn.lock", "yarn"),
+        ("pnpm-lock.yaml", "pnpm"),
+        ("bun.lockb", "bun"),
+        ("bun.lock", "bun"),
+        ("uv.lock", "uv"),
+        ("poetry.lock", "poetry"),
+        ("requirements.txt", "pip"),
+        ("Cargo.lock", "cargo"),
+        ("go.sum", "go"),
+        ("composer.lock", "composer"),
+        ("Gemfile.lock", "bundler"),
+    ];
+
+    for &(filename, preset) in LOCKFILE_MAP {
+        if dir.join(filename).exists() {
+            return Some(preset);
+        }
+    }
+    None
 }
 
 // ── Interactive wizard ────────────────────────────────────────────────────────
@@ -775,5 +843,50 @@ mod tests {
         let rendered = render_template("generic").expect("generic preset should exist");
         assert!(rendered.contains("profiles:"));
         assert!(!rendered.contains("package_manager:"));
+    }
+
+    use super::detect_lockfile_preset;
+
+    #[test]
+    fn detects_npm_from_package_lock_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        assert_eq!(detect_lockfile_preset(dir.path()), Some("npm"));
+    }
+
+    #[test]
+    fn detects_yarn_from_yarn_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("yarn.lock"), "").unwrap();
+        assert_eq!(detect_lockfile_preset(dir.path()), Some("yarn"));
+    }
+
+    #[test]
+    fn detects_uv_over_requirements_txt_when_both_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("uv.lock"), "").unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "").unwrap();
+        // uv.lock appears before requirements.txt in the priority list
+        assert_eq!(detect_lockfile_preset(dir.path()), Some("uv"));
+    }
+
+    #[test]
+    fn detects_composer_from_composer_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("composer.lock"), "{}").unwrap();
+        assert_eq!(detect_lockfile_preset(dir.path()), Some("composer"));
+    }
+
+    #[test]
+    fn detects_bundler_from_gemfile_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Gemfile.lock"), "").unwrap();
+        assert_eq!(detect_lockfile_preset(dir.path()), Some("bundler"));
+    }
+
+    #[test]
+    fn returns_none_when_no_lockfile_found() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(detect_lockfile_preset(dir.path()), None);
     }
 }

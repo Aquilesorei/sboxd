@@ -19,6 +19,10 @@ pub fn run(cli: Cli) -> Result<ExitCode, SboxError> {
         Commands::Shim(command) => crate::shim::execute(command),
         Commands::Bootstrap(_) => crate::bootstrap::execute(&cli),
         Commands::Audit(command) => crate::audit::execute(&cli, command),
+        Commands::Completions(command) => {
+            crate::cli::generate_completions(command.shell);
+            Ok(std::process::ExitCode::SUCCESS)
+        }
     }
 }
 

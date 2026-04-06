@@ -1301,6 +1301,7 @@ mod tests {
             quiet: false,
             command: Commands::Plan(PlanCommand {
                 show_command: false,
+                audit: false,
                 command: vec!["npm".into(), "install".into()],
             }),
         }

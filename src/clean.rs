@@ -6,6 +6,10 @@ use crate::config::{LoadOptions, load_config};
 use crate::error::SboxError;
 
 pub fn execute(cli: &Cli, command: &CleanCommand) -> Result<ExitCode, SboxError> {
+    if command.global_scope {
+        return execute_global();
+    }
+
     let scope = CleanScope::from_command(command);
     let loaded = load_config(&LoadOptions {
         workspace: cli.workspace.clone(),
@@ -54,6 +58,59 @@ pub fn execute(cli: &Cli, command: &CleanCommand) -> Result<ExitCode, SboxError>
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Remove all sbox-managed containers and volumes across every project on this host.
+/// Identifies resources by the `sbox-` name prefix (the same convention used when creating them).
+fn execute_global() -> Result<ExitCode, SboxError> {
+    let containers = list_podman_names(&["ps", "-a", "--format", "{{.Names}}"], "sbox-")?;
+    let volumes = list_podman_names(&["volume", "ls", "--format", "{{.Name}}"], "sbox-")?;
+    let images = list_podman_names(
+        &["images", "--format", "{{.Repository}}:{{.Tag}}"],
+        "sbox-build-",
+    )?;
+
+    let mut removed = Vec::new();
+
+    for name in &containers {
+        remove_podman_container(name)?;
+        removed.push(format!("container:{name}"));
+    }
+    for name in &volumes {
+        remove_podman_volume(name)?;
+        removed.push(format!("volume:{name}"));
+    }
+    for tag in &images {
+        remove_podman_image(tag)?;
+        removed.push(format!("image:{tag}"));
+    }
+
+    if removed.is_empty() {
+        println!("clean --global: no sbox-managed resources found");
+    } else {
+        println!("clean --global: removed {}", removed.join(", "));
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn list_podman_names(args: &[&str], prefix: &str) -> Result<Vec<String>, SboxError> {
+    let output = Command::new("podman")
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|source| SboxError::BackendUnavailable {
+            backend: "podman".to_string(),
+            source,
+        })?;
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| name.starts_with(prefix))
+        .map(String::from)
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy)]

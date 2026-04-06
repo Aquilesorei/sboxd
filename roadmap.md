@@ -141,7 +141,7 @@ Decision: not implemented in v2. The rootless Podman model (no-new-privileges, r
 
 ## Definition Of Done For v2 — Met
 
-A Linux user can:
+A Linux, macOS, or Windows user can:
 - enforce global or per-profile image trust rules with config-load-time validation
 - rely on automated coverage for the main Podman security paths
 - use package-manager-agnostic install policy (`role`, `pre_run`, `lockfile_files`) without hardcoding PM names
@@ -151,14 +151,61 @@ A Linux user can:
 
 ---
 
-## Remaining Work (Post-v2)
+## v3 Roadmap
 
-The following items are out of scope for v1/v2 but worth tracking for a future track:
+### Shipped in v0.1.9 (phases 13–15)
+
+- `sbox shim --verify` — PATH-aware shim health check, exits 1 on problems
+- `sbox doctor` shim health check — integrated summary in doctor report
+- `composer` and `bundler` presets with security defaults (token denial, credential exclusion, env injection)
+- `bundle` and `ruby` added to shim targets
+- `sbox completions <shell>` — shell completion scripts via `clap_complete`
+- `sbox init --from-lockfile` — auto-detects preset from existing lockfile; 13 lockfile types supported
+- `sbox clean --global` — host-wide cleanup of all sbox-managed containers/volumes/images
+
+### Shipped in v0.1.8
+
+- macOS support: `current_uid_gid()` via `id -u`/`id -g`; `home_dir()` centralised in `platform.rs`
+- Windows support: Docker Desktop paths normalised via `path_to_docker_str`; `.cmd` shims generated; `USERPROFILE` respected
+- `sbox run --dry-run` — resolves and prints the plan without executing
+- `sbox run -e NAME=VALUE` — inject extra environment variables at invocation time
+- Docker `--user UID:GID` always injected for `ResolvedUser::Default` — fixes file ownership in non-rootless Docker
+- `sbox doctor` new checks: rootless Docker warning, `root_command_dispatch_warnings`
+- CI matrix: Linux / macOS / Windows; release targets for all five platform/arch combos
+- musl aarch64 release now uses `cross` (genuine musl toolchain, not glibc cross-compiler)
+- `detect_compose_image` heuristic: dynamic indent detection, prefers well-known app service names
+
+---
+
+### Phase 13: Shim Health And Doctor Integration — Complete
+
+- **`sbox shim --verify`** — scans PATH, reports each target as `ok`/`shadowed`/`missing`/`inactive`; exits 1 if any problems
+- **`sbox doctor` shim check** — calls `verify_shims()` and emits a single `pass`/`warn` line showing how many shims are active and correctly ordered
+
+### Phase 14: Additional Presets — Complete
+
+- **`composer` preset** — `composer:2` image, `vendor/` writable, `packagist.org` allowed, `COMPOSER_AUTH` denied, `auth.json` excluded, `COMPOSER_NO_INTERACTION=1`
+- **`bundler` preset** — `ruby:3-slim` image, `vendor/bundle` + `.bundle` writable, `rubygems.org` allowed, `GEM_HOST_API_KEY` denied, `BUNDLE_PATH=vendor/bundle`
+- **`bundle` and `ruby` added to `SHIM_TARGETS`**
+
+### Phase 15: Developer Experience Polish — Complete
+
+- **`sbox completions <bash|zsh|fish|powershell|elvish>`** — prints clap-generated completion script to stdout via `clap_complete`
+- **`sbox init --from-lockfile`** — detects lockfile in CWD and auto-selects preset; priority order handles `uv.lock` over `requirements.txt`, `poetry.lock` over `requirements.txt`, etc.
+- **`sbox clean --global`** — removes all `sbox-` prefixed containers, volumes, and images across every project on the host; no `sbox.yaml` required
+
+### Phase 16: Distribution
+
+- **Homebrew tap** (`homebrew-sbox`) — formula that installs the macOS binary from the GitHub release; makes `brew install aquilesorei/sbox/sbox` work without Cargo
+- **`sbox audit` integrated into plan output** — surface audit results inside `sbox plan` so users see security findings before deciding to run
+
+---
+
+## Remaining Work (Post-v3)
 
 - **`status` and `logs` subcommands** — monitor running reusable sessions
-- **Rebuild detection for `image.build`** — hash the Dockerfile and relevant build context to detect when a rebuild is needed
+- **Rebuild detection for `image.build`** — hash the Dockerfile and build context to detect when a rebuild is needed
 - **Remote runner mode** — execute plans on a remote host or in CI without a local container runtime
-- **Non-Linux platform support** — macOS (Lima/Podman Machine) or Windows (WSL2)
 - **Microvm/gVisor backend** — stronger isolation for higher-risk workloads if the threat model expands
-- **Wildcard DNS enforcement for unknown domains** — for well-known package registry base domains (`npmjs.org`, `pypi.org`, `crates.io`, `github.com`, etc.) `*.example.org` patterns expand to the full set of known subdomains; for unknown base domains only the base itself is resolved. Full enforcement for arbitrary wildcards requires a container-side DNS proxy (e.g. CoreDNS or dnsmasq) which would need `CAP_NET_BIND_SERVICE` or a privilege escalation path — deferred
+- **Wildcard DNS enforcement for unknown domains** — full enforcement for arbitrary `*.example.org` patterns requires a container-side DNS proxy (e.g. CoreDNS or dnsmasq); deferred
 - **Per-secret profile conditions** — `when_profiles` filtering is implemented; richer conditional logic (e.g. `when_command_matches`) is not

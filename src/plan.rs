@@ -44,6 +44,22 @@ pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> 
             command.command.is_empty(),
         )
     );
+
+    // Append an inline security scan when the user passes --audit.
+    // Gated behind a flag so `sbox plan` stays fast and deterministic by default.
+    // Non-blocking: a missing audit tool or tool failure never causes `sbox plan` to exit non-zero.
+    if command.audit && !command.command.is_empty() {
+        let pm_name = loaded
+            .config
+            .package_manager
+            .as_ref()
+            .map(|pm| pm.name.as_str())
+            .unwrap_or_else(|| crate::audit::detect_pm_from_workspace(&loaded.workspace_root));
+
+        let result = crate::audit::run_inline(pm_name, &loaded.workspace_root);
+        print!("{}", render_inline_audit(&result));
+    }
+
     Ok(ExitCode::SUCCESS)
 }
 
@@ -339,6 +355,32 @@ pub(crate) fn render_plan(
     }
 
     output
+}
+
+fn render_inline_audit(result: &crate::audit::InlineAuditResult) -> String {
+    use crate::audit::InlineAuditStatus;
+
+    let mut out = String::new();
+    writeln!(out).ok();
+    writeln!(out, "security-scan:").ok();
+    writeln!(out, "  tool: {}", result.tool).ok();
+
+    let status_label = match result.status {
+        InlineAuditStatus::Clean => "clean",
+        InlineAuditStatus::Findings => "VULNERABILITIES FOUND",
+        InlineAuditStatus::ToolNotFound => "tool not installed",
+        InlineAuditStatus::Error => "error",
+    };
+    writeln!(out, "  status: {status_label}").ok();
+
+    if !result.output.trim().is_empty() {
+        writeln!(out, "  output: |").ok();
+        for line in result.output.trim_end().lines() {
+            writeln!(out, "    {line}").ok();
+        }
+    }
+
+    out
 }
 
 fn render_podman_command(plan: &ExecutionPlan) -> Option<String> {

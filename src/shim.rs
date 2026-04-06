@@ -12,11 +12,16 @@ use crate::error::SboxError;
 const SHIM_TARGETS: &[&str] = &[
     // package managers / installers
     "npm", "npx", "pnpm", "yarn", "bun", "uv", "pip", "pip3", "poetry", "cargo", "composer",
+    "bundle",
     // runtimes — prevent post-install artifacts from running on the bare host
-    "node", "python3", "python", "go",
+    "node", "python3", "python", "go", "ruby",
 ];
 
 pub fn execute(command: &ShimCommand) -> Result<ExitCode, SboxError> {
+    if command.verify {
+        return execute_verify(command);
+    }
+
     let shim_dir = resolve_shim_dir(command)?;
 
     if !command.dry_run {
@@ -108,6 +113,105 @@ fn shim_file_path(dir: &Path, name: &str) -> PathBuf {
     #[cfg(not(windows))]
     {
         dir.join(name)
+    }
+}
+
+/// For each shim target, check whether:
+/// 1. A shim file exists in the shim dir.
+/// 2. The shim dir appears in PATH before the directory that contains the real binary.
+///
+/// Returns (ok_count, problem_count). Prints a line per target.
+pub fn verify_shims(shim_dir: &Path) -> (usize, usize) {
+    let mut ok = 0usize;
+    let mut problems = 0usize;
+
+    let path_os = std::env::var_os("PATH").unwrap_or_default();
+    let path_dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path_os).collect();
+
+    // Index of the shim dir in PATH, if present.
+    let shim_pos = path_dirs.iter().position(|d| d == shim_dir);
+
+    for &name in SHIM_TARGETS {
+        let shim_file = shim_file_path(shim_dir, name);
+
+        if !shim_file.exists() {
+            println!("missing  {name:<12}  shim not found at {}", shim_file.display());
+            problems += 1;
+            continue;
+        }
+
+        // Find the real binary position in PATH (skip the shim dir itself).
+        let real_pos = path_dirs.iter().enumerate().find_map(|(i, dir)| {
+            if dir == shim_dir {
+                return None;
+            }
+            #[cfg(windows)]
+            {
+                for ext in &[".exe", ".cmd", ".bat"] {
+                    if dir.join(format!("{name}{ext}")).is_file() {
+                        return Some(i);
+                    }
+                }
+                None
+            }
+            #[cfg(not(windows))]
+            {
+                let candidate = dir.join(name);
+                if is_executable_file(&candidate) {
+                    Some(i)
+                } else {
+                    None
+                }
+            }
+        });
+
+        match (shim_pos, real_pos) {
+            (Some(sp), Some(rp)) if sp < rp => {
+                println!("ok       {name:<12}  shim is active (PATH position {sp} < {rp})");
+                ok += 1;
+            }
+            (Some(_sp), Some(rp)) => {
+                println!(
+                    "shadowed {name:<12}  real binary at PATH position {rp} comes before shim dir; \
+                     move {} earlier in PATH",
+                    shim_dir.display()
+                );
+                problems += 1;
+            }
+            (None, _) => {
+                println!(
+                    "inactive {name:<12}  shim exists but {} is not in PATH",
+                    shim_dir.display()
+                );
+                problems += 1;
+            }
+            (Some(_), None) => {
+                println!("ok       {name:<12}  shim active (no real binary found elsewhere in PATH)");
+                ok += 1;
+            }
+        }
+    }
+
+    (ok, problems)
+}
+
+fn execute_verify(command: &ShimCommand) -> Result<ExitCode, SboxError> {
+    let shim_dir = resolve_shim_dir(command)?;
+    println!("shim dir: {}\n", shim_dir.display());
+
+    let (ok, problems) = verify_shims(&shim_dir);
+
+    println!();
+    println!("{ok} ok, {problems} problem(s)");
+
+    if problems > 0 {
+        println!(
+            "\nRun `sbox shim` to (re)create missing shims, then ensure {} is first in PATH.",
+            shim_dir.display()
+        );
+        Ok(ExitCode::FAILURE)
+    } else {
+        Ok(ExitCode::SUCCESS)
     }
 }
 

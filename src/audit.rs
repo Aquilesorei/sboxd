@@ -1,9 +1,88 @@
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
 use crate::cli::{AuditCommand, Cli};
 use crate::config::{LoadOptions, load_config};
 use crate::error::SboxError;
 use crate::exec::status_to_exit_code;
+
+// ── Inline audit (used by `sbox plan`) ───────────────────────────────────────
+
+pub enum InlineAuditStatus {
+    /// Audit ran and found no vulnerabilities.
+    Clean,
+    /// Audit ran and found vulnerabilities (exit code non-zero).
+    Findings,
+    /// The audit tool binary is not in PATH.
+    ToolNotFound,
+    /// The tool launched but failed for a non-audit reason.
+    Error,
+}
+
+pub struct InlineAuditResult {
+    pub pm_name: String,
+    pub tool: &'static str,
+    pub status: InlineAuditStatus,
+    /// Captured stdout + stderr, truncated to 2 000 chars.
+    pub output: String,
+}
+
+/// Run the audit tool for `pm_name` non-interactively and capture its output.
+/// Never panics or propagates errors — always returns a result the caller can display.
+pub(crate) fn run_inline(pm_name: &str, workspace_root: &Path) -> InlineAuditResult {
+    let (program, base_args, _hint) = audit_command_for(pm_name);
+
+    let result = Command::new(program)
+        .args(base_args)
+        .current_dir(workspace_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => InlineAuditResult {
+            pm_name: pm_name.to_string(),
+            tool: program,
+            status: InlineAuditStatus::ToolNotFound,
+            output: format!(
+                "`{program}` is not installed — install it and re-run `sbox plan` \
+                 or run `sbox audit` directly."
+            ),
+        },
+        Err(_) => InlineAuditResult {
+            pm_name: pm_name.to_string(),
+            tool: program,
+            status: InlineAuditStatus::Error,
+            output: format!("`{program}` could not be launched."),
+        },
+        Ok(out) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let truncated = if combined.len() > 2_000 {
+                format!(
+                    "{}…  (truncated — run `sbox audit` for full output)",
+                    combined[..2_000].trim_end()
+                )
+            } else {
+                combined
+            };
+            InlineAuditResult {
+                pm_name: pm_name.to_string(),
+                tool: program,
+                status: if out.status.success() {
+                    InlineAuditStatus::Clean
+                } else {
+                    InlineAuditStatus::Findings
+                },
+                output: truncated,
+            }
+        }
+    }
+}
 
 /// `sbox audit` — scan the project's lockfile for known-malicious or vulnerable packages.
 ///
@@ -93,7 +172,7 @@ fn audit_command_for(pm_name: &str) -> (&'static str, &'static [&'static str], &
 
 /// Detect the package manager from lockfiles present in the workspace root.
 /// Fallback when no `package_manager:` section is configured.
-fn detect_pm_from_workspace(root: &std::path::Path) -> &'static str {
+pub(crate) fn detect_pm_from_workspace(root: &Path) -> &'static str {
     if root.join("package-lock.json").exists() || root.join("npm-shrinkwrap.json").exists() {
         return "npm";
     }
