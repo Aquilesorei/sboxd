@@ -5,8 +5,10 @@
 Before debugging a failed run, always check:
 
 ```bash
-sbox plan -- <your command>   # shows exactly what will be run and why
-sbox doctor                   # checks backend health, signature verification, shim paths
+sbox plan -- <your command>          # shows exactly what will be run and why
+sbox run --dry-run -- <your command> # same but also prints the raw backend command
+sbox doctor                          # checks backend health, shim ordering, signature verification
+sbox shim --verify                   # detailed shim vs PATH report
 ```
 
 ---
@@ -221,16 +223,46 @@ error: strict security: sensitive variable passed through
 
 **Cause:** The real binary appears before the shim directory in `PATH`.
 
-**Fix:** Make sure `~/.local/bin` (or wherever shims are installed) comes before the real binary:
+**Fix:** Run `sbox shim --verify` to see exactly what is wrong:
+
+```
+shadowed npm   real binary at PATH position 1 comes before shim dir
+```
+
+Then fix your PATH ordering:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 which npm   # should show ~/.local/bin/npm
 ```
 
+`sbox doctor` also reports a `shims` warning when any shim is shadowed or missing.
+
 ### Shim runs on a project without `sbox.yaml`
 
 **Cause:** This is expected — shims fall through to the real binary when no `sbox.yaml` is found. No sandbox is applied.
+
+### `sbox init --from-lockfile` reports "no recognised lockfile found"
+
+**Cause:** The current directory has no lockfile sbox recognises (or the lockfile is in a subdirectory).
+
+**Fix:** Run from the project root, or use a named preset:
+
+```bash
+cd myproject
+sbox init --preset node
+```
+
+### `sbox plan --audit` shows "tool not installed"
+
+**Cause:** The native audit tool (`npm`, `cargo audit`, `pip-audit`, etc.) is not in PATH on the host.
+
+**Fix:** Install it on the host — audit intentionally runs on the host, not in the sandbox, so it can reach advisory databases. For example:
+
+```bash
+cargo install cargo-audit     # for Rust
+pip install pip-audit         # for Python
+```
 
 ---
 

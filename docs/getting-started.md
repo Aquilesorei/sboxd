@@ -2,25 +2,24 @@
 
 ## What you need
 
-- Linux (Fedora, Ubuntu, Debian, Arch, etc.)
+- Linux, macOS, or Windows
 - Rootless Podman **or** Docker installed and working
 - That's it
 
-If you're not sure whether rootless Podman is set up correctly, run `sbox doctor` after installing — it checks everything and tells you what to fix.
+If you're not sure whether your setup is correct, run `sbox doctor` after installing — it checks everything and tells you what to fix.
 
 ---
 
 ## Install sbox
 
-**From crates.io:**
+**macOS — Homebrew (recommended):**
 
 ```bash
-cargo install sboxd
+brew tap aquilesorei/sbox
+brew install sbox
 ```
 
-The binary is named `sbox`.
-
-**Pre-built binaries** (no Rust toolchain needed):
+**Linux — pre-built binary:**
 
 ```bash
 # x86_64
@@ -38,6 +37,32 @@ Make sure `~/.local/bin` is in your PATH:
 export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
 ```
 
+**macOS — pre-built binary:**
+
+```bash
+# Apple Silicon
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-macos-aarch64 \
+  -o ~/.local/bin/sbox && chmod +x ~/.local/bin/sbox
+
+# Intel
+curl -fsSL https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-macos-x86_64 \
+  -o ~/.local/bin/sbox && chmod +x ~/.local/bin/sbox
+```
+
+**Windows — PowerShell:**
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/Aquilesorei/sboxd/releases/latest/download/sbox-windows-x86_64.exe `
+  -OutFile "$env:USERPROFILE\.local\bin\sbox.exe"
+$env:PATH += ";$env:USERPROFILE\.local\bin"
+```
+
+**From crates.io (any platform):**
+
+```bash
+cargo install sboxd
+```
+
 **From source:**
 
 ```bash
@@ -48,31 +73,50 @@ cargo install --path .
 
 ---
 
+## Shell completions
+
+```bash
+sbox completions bash  >> ~/.bash_completion
+sbox completions zsh   >  ~/.zsh/completions/_sbox
+sbox completions fish  >  ~/.config/fish/completions/sbox.fish
+```
+
+---
+
 ## Check everything works
 
 ```bash
 sbox doctor
 ```
 
-This tells you whether Podman or Docker is available, whether rootless mode is configured, whether `skopeo` is available for signature verification, and whether shims are installed. Fix anything it flags before continuing.
+Checks backend availability, rootless mode, signature verification support, and shim health. Fix anything it flags before continuing.
 
 ---
 
 ## Add sbox to a project
 
-### Option 1 — preset (fastest)
+### Option 1 — auto-detect from lockfile (fastest)
+
+If you already have a lockfile, sbox can figure out the right preset automatically:
 
 ```bash
-sbox init --preset node      # Node.js — npm, node:22-bookworm-slim
-sbox init --preset python    # Python  — uv,  python:3.13-slim
-sbox init --preset rust      # Rust    — cargo, rust:1-bookworm
-sbox init --preset go        # Go      — go, golang:1.23-bookworm
-sbox init --preset generic   # Blank   — ubuntu:24.04, manual profiles
+cd myproject
+sbox init --from-lockfile
 ```
 
-Language presets generate a `package_manager:` config — one line declares the package manager name and sbox handles the rest. The `generic` preset generates a manual profiles skeleton instead.
+Detects `package-lock.json` → npm, `uv.lock` → uv, `Cargo.lock` → cargo, `Gemfile.lock` → bundler, `composer.lock` → composer, etc.
 
-### Option 2 — interactive wizard
+### Option 2 — named preset
+
+```bash
+sbox init --preset node       # Node.js — npm, node:22-bookworm-slim
+sbox init --preset python     # Python  — uv,  ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+sbox init --preset rust       # Rust    — cargo, rust:1-bookworm
+sbox init --preset go         # Go      — go, golang:1.23-bookworm
+sbox init --preset generic    # Blank   — ubuntu:24.04, manual profiles
+```
+
+### Option 3 — interactive wizard
 
 ```bash
 cd myproject
@@ -84,11 +128,11 @@ The wizard asks two to five questions depending on your choice:
 **Simple mode** (recommended for most projects):
 
 1. Setup mode → `simple`
-2. Package manager → npm / yarn / pnpm / bun / uv / pip / poetry / cargo / go
+2. Package manager → npm / yarn / pnpm / bun / uv / pip / poetry / cargo / go / composer / bundler
 3. Container image → default shown, press Enter to accept
 4. Container backend → auto / podman / docker
 
-Writes a minimal config with `package_manager:`. That's it — sbox infers install profiles, build profiles, network policy, and writable paths from the preset.
+Writes a minimal config with `package_manager:`. sbox infers install profiles, build profiles, network policy, and writable paths from the preset.
 
 **Advanced mode** (for custom policies):
 
@@ -109,10 +153,14 @@ Press Enter at any prompt to accept the default.
 ## See what will happen before running anything
 
 ```bash
-sbox plan -- npm install
+sbox plan -- npm install           # show resolved policy
+sbox plan --audit -- npm install   # show policy + run npm audit inline
+sbox run --dry-run -- npm install  # show policy + the exact backend command, no execution
 ```
 
-This resolves the full execution policy and prints it — which image, which mounts, which env vars pass through, what network policy — without starting a container. Use this to understand and debug your config.
+`sbox plan` resolves the full execution policy and prints it — which image, which mounts, which env vars pass through, what network policy — without starting a container. Use this to understand and debug your config.
+
+Pass `--audit` to also run the ecosystem's native audit tool (`npm audit`, `cargo audit`, `pip-audit`, etc.) and append findings to the plan output.
 
 ```
 sbox plan

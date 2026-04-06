@@ -103,6 +103,72 @@ jobs:
           files: sbox-*
           generate_release_notes: true
 
+  update-homebrew-tap:
+    name: Update Homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Compute SHA256 hashes
+        id: sha
+        run: |
+          echo "arm=$(sha256sum sbox-macos-aarch64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "intel=$(sha256sum sbox-macos-x86_64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-sbox tap
+        uses: actions/checkout@v4
+        with:
+          repository: Aquilesorei/homebrew-sbox
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-sbox
+
+      - name: Update formula
+        env:
+          VERSION: ${{ github.ref_name }}   # e.g. v0.1.9
+          SHA_ARM: ${{ steps.sha.outputs.arm }}
+          SHA_INTEL: ${{ steps.sha.outputs.intel }}
+        run: |
+          VERSION_NUM="${VERSION#v}"         # strip leading 'v' → 0.1.9
+          cat > homebrew-sbox/Formula/sbox.rb <<EOF
+          class Sbox < Formula
+            desc "Policy-driven sandboxed command runner"
+            homepage "https://github.com/Aquilesorei/sboxd"
+            version "${VERSION_NUM}"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/Aquilesorei/sboxd/releases/download/${VERSION}/sbox-macos-aarch64"
+                sha256 "${SHA_ARM}"
+              end
+              on_intel do
+                url "https://github.com/Aquilesorei/sboxd/releases/download/${VERSION}/sbox-macos-x86_64"
+                sha256 "${SHA_INTEL}"
+              end
+            end
+
+            def install
+              bin.install Dir["sbox-macos-*"].first => "sbox"
+            end
+
+            test do
+              system "\#{bin}/sbox", "--version"
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        working-directory: homebrew-sbox
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/sbox.rb
+          git commit -m "sbox ${VERSION}"
+          git push
+
   publish-crate:
     name: Publish to crates.io
     needs: build

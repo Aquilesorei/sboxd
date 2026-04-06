@@ -194,10 +194,10 @@ A Linux, macOS, or Windows user can:
 - **`sbox init --from-lockfile`** — detects lockfile in CWD and auto-selects preset; priority order handles `uv.lock` over `requirements.txt`, `poetry.lock` over `requirements.txt`, etc.
 - **`sbox clean --global`** — removes all `sbox-` prefixed containers, volumes, and images across every project on the host; no `sbox.yaml` required
 
-### Phase 16: Distribution
+### Phase 16: Distribution — Complete
 
-- **Homebrew tap** (`homebrew-sbox`) — formula that installs the macOS binary from the GitHub release; makes `brew install aquilesorei/sbox/sbox` work without Cargo
-- **`sbox audit` integrated into plan output** — surface audit results inside `sbox plan` so users see security findings before deciding to run
+- **Homebrew tap** (`Aquilesorei/homebrew-sbox`) — formula auto-updated by `release.yml` on every tag; SHA256 hashes computed from the built artifacts; `brew tap aquilesorei/sbox && brew install sbox`
+- **`sbox plan --audit`** — runs the ecosystem's native audit tool inline and appends a `security-scan:` section to the plan output; non-blocking, opt-in flag
 
 ---
 

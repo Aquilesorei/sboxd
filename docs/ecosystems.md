@@ -225,6 +225,60 @@ caches:
 
 ---
 
+## PHP (Composer)
+
+```yaml
+image:
+  ref: composer:2
+
+package_manager:
+  name: composer
+```
+
+Routes `composer install` / `composer update` → network on, `packagist.org` only, `vendor/` writable. `COMPOSER_AUTH` and `PACKAGIST_TOKEN` are automatically denied so credentials cannot be exfiltrated. `auth.json` is excluded from the workspace mount.
+
+With a cache:
+
+```yaml
+package_manager:
+  name: composer
+
+environment:
+  set:
+    COMPOSER_CACHE_DIR: /var/tmp/sbox/composer-cache
+
+caches:
+  - name: composer-cache
+    target: /var/tmp/sbox/composer-cache
+```
+
+---
+
+## Ruby (Bundler)
+
+```yaml
+image:
+  ref: ruby:3-slim
+
+package_manager:
+  name: bundler
+```
+
+Routes `bundle install` / `bundle update` → network on, `rubygems.org` only, `vendor/bundle` and `.bundle` writable. `BUNDLE_PATH=vendor/bundle` is injected automatically so gems install into the workspace rather than the container's system Ruby. `GEM_HOST_API_KEY` and `RUBYGEMS_API_KEY` are denied.
+
+With a cache:
+
+```yaml
+package_manager:
+  name: bundler
+
+caches:
+  - name: bundler-cache
+    target: /vendor/bundle
+```
+
+---
+
 ## Getting the image digest
 
 Pin the image digest to prevent unexpected image changes:
