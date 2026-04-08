@@ -273,6 +273,14 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
         }
     }
 
+    for name in config.commands.keys() {
+        if is_reserved_command_name(name) {
+            errors.push(format!(
+                "command alias `{name}` conflicts with a built-in sbox subcommand or alias; choose a different name"
+            ));
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -280,6 +288,39 @@ pub fn validate_config(config: &Config) -> Result<(), SboxError> {
             message: errors.join("\n"),
         })
     }
+}
+
+fn is_reserved_command_name(name: &str) -> bool {
+    matches!(
+        name,
+        "init"
+            | "i"
+            | "run"
+            | "r"
+            | "exec"
+            | "e"
+            | "shell"
+            | "sh"
+            | "plan"
+            | "p"
+            | "doctor"
+            | "d"
+            | "clean"
+            | "c"
+            | "shim"
+            | "bootstrap"
+            | "b"
+            | "audit"
+            | "a"
+            | "completions"
+            | "status"
+            | "s"
+            | "logs"
+            | "l"
+            | "explain"
+            | "ex"
+            | "lint"
+    )
 }
 
 /// Collect non-fatal warnings for the config.
@@ -524,7 +565,6 @@ fn is_sensitive_host_path(path: &Path) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
@@ -544,7 +584,7 @@ mod tests {
             ProfileConfig {
                 mode: ExecutionMode::Sandbox,
                 image: None,
-                network: Some("off".into()),
+                network: Some("off".to_string()),
                 writable: Some(true),
                 require_pinned_image: None,
                 require_lockfile: None,
@@ -553,6 +593,7 @@ mod tests {
                 pre_run: Vec::new(),
                 network_allow: Vec::new(),
                 ports: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
@@ -560,6 +601,7 @@ mod tests {
                 shell: None,
 
                 writable_paths: None,
+                compose: None,
             },
         );
 
@@ -573,6 +615,7 @@ mod tests {
                 pull_policy: None,
                 strict_security: None,
                 require_pinned_image: None,
+                compose: None,
             }),
             workspace: Some(WorkspaceConfig {
                 root: Some(PathBuf::from(".")),
@@ -602,6 +645,7 @@ mod tests {
             profiles,
             dispatch: IndexMap::<String, DispatchRule>::new(),
             package_manager: None,
+            commands: IndexMap::new(),
         }
     }
 

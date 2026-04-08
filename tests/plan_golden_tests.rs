@@ -35,6 +35,9 @@ fn normalize_output(output: &str) -> String {
     // since DNS resolution is non-deterministic across environments.
     let mut result = Vec::new();
     for line in output.lines() {
+        if line.trim_start().starts_with("note: `network_allow` is hostname/DNS-based") {
+            continue;
+        }
         // network_allow lines already use stable `[resolved] host1, host2` or `[patterns] *.x`
         // format without raw IPs — no normalization needed.
         result.push(line.to_string());

@@ -33,8 +33,9 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
-
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
     profiles.insert(
@@ -56,8 +57,9 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
-
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
     profiles.insert(
@@ -79,8 +81,9 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
-
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
     profiles.insert(
@@ -102,8 +105,9 @@ fn minimal_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
-
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
 
@@ -137,6 +141,7 @@ fn minimal_config() -> Config {
             container_name: None,
             pull_policy: None,
             require_pinned_image: None,
+            compose: None,
         }),
         workspace: Some(WorkspaceConfig {
             root: Some(PathBuf::from("/workspace/project")),
@@ -167,6 +172,7 @@ fn minimal_config() -> Config {
         dispatch,
 
         package_manager: None,
+        commands: IndexMap::new(),
     }
 }
 
@@ -190,10 +196,13 @@ fn base_cli() -> Cli {
         strict_security: false,
         verbose: 0,
         quiet: false,
-        command: Commands::Plan(PlanCommand {
+        output_format: sbox::cli::OutputFormat::Text,
+        command: Some(Commands::Plan(PlanCommand {
             show_command: false,
+            audit: false,
             command: vec!["echo".into(), "hello".into()],
-        }),
+        })),
+        custom_command: Vec::new(),
     }
 }
 
@@ -275,10 +284,10 @@ fn cli_profile_flag_overrides_dispatch() {
 #[test]
 fn exec_subcommand_selects_profile() {
     let cli = Cli {
-        command: Commands::Exec(ExecCommand {
+        command: Some(Commands::Exec(ExecCommand {
             profile: "install".to_string(),
             command: vec!["pip".into(), "install".into(), "requests".into()],
-        }),
+        })),
         ..base_cli()
     };
 
@@ -927,6 +936,50 @@ fn writable_paths_inject_rw_mounts_when_workspace_is_readonly() {
 }
 
 #[test]
+fn file_writable_paths_mount_parent_directory_rw() {
+    let mut loaded = make_loaded_config();
+    loaded.config.workspace = Some(WorkspaceConfig {
+        root: Some(PathBuf::from("/workspace/project")),
+        mount: Some("/workspace".to_string()),
+        writable: Some(false),
+        writable_paths: vec!["uv.lock".to_string(), "nested/Cargo.lock".to_string()],
+        exclude_paths: Vec::new(),
+    });
+    loaded.config.profiles.get_mut("default").unwrap().writable = Some(false);
+
+    let cli = base_cli();
+    let plan = resolve_execution_plan(
+        &cli,
+        &loaded,
+        ResolutionTarget::Run,
+        &["uv".into(), "sync".into()],
+    )
+    .expect("plan should resolve");
+
+    assert_eq!(plan.mounts.len(), 3);
+    assert!(
+        plan.mounts[0].read_only,
+        "workspace root should stay ro by default"
+    );
+
+    let root_mount = &plan.mounts[1];
+    assert_eq!(root_mount.target, "/workspace/uv.lock");
+    assert!(
+        !root_mount.read_only,
+        "root lockfile needs rw parent dir semantics"
+    );
+    assert!(root_mount.create, "root-level file mount should be allowed to create");
+
+    let nested_mount = &plan.mounts[2];
+    assert_eq!(nested_mount.target, "/workspace/nested");
+    assert!(!nested_mount.read_only);
+    assert!(
+        nested_mount.create,
+        "missing parent directories should still be auto-created"
+    );
+}
+
+#[test]
 fn writable_paths_ignored_when_profile_makes_workspace_writable() {
     let mut loaded = make_loaded_config();
     loaded.config.workspace = Some(WorkspaceConfig {
@@ -988,10 +1041,13 @@ mod exclude_paths_tests {
             strict_security: false,
             verbose: 0,
             quiet: false,
-            command: Commands::Plan(PlanCommand {
+            output_format: sbox::cli::OutputFormat::Text,
+            command: Some(Commands::Plan(PlanCommand {
                 show_command: false,
+                audit: false,
                 command: vec!["echo".into()],
-            }),
+            })),
+            custom_command: Vec::new(),
         }
     }
 
@@ -1016,8 +1072,9 @@ mod exclude_paths_tests {
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
-
                 writable_paths: None,
+                network_policy: sbox::config::model::NetworkPolicy::Dns,
+                compose: None,
             },
         );
         Config {
@@ -1030,6 +1087,7 @@ mod exclude_paths_tests {
                 container_name: None,
                 pull_policy: None,
                 require_pinned_image: None,
+                compose: None,
             }),
             workspace: Some(WorkspaceConfig {
                 root: Some(workspace_root.clone()),
@@ -1060,6 +1118,7 @@ mod exclude_paths_tests {
             dispatch: IndexMap::new(),
 
             package_manager: None,
+            commands: IndexMap::new(),
         }
     }
 

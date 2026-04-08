@@ -33,7 +33,7 @@ jobs:
       - name: Integration tests (no container runtime required)
         # Windows: skip integration tests that rely on Unix test helpers
         if: matrix.os != 'windows-latest'
-        run: cargo test --tests --exclude-ignored
+        run: cargo test --tests
         env:
           SBOX_RUN_PODMAN_TESTS: ""
           SBOX_RUN_DOCKER_TESTS: ""

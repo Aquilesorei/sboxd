@@ -38,6 +38,7 @@ workspace:
 
 policy:
   network: off
+  network_policy: dns
   network_allow: <none>
   writable: true
   no_new_privileges: true
@@ -57,6 +58,7 @@ environment:
 
 mounts:
   - bind $ROOT -> /workspace (ro, workspace)
+  - mask /workspace/.env (credential masked)
 
 caches:
   - uv-cache -> /var/tmp/sbox/uv-cache (rw, source: <default>)

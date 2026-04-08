@@ -154,6 +154,8 @@ workspace:
     - package-lock.json
 ```
 
+For lockfiles, keep listing the file path itself. sbox turns that into writable parent-directory access so rename-based updates succeed.
+
 **`ENOENT` for a package tarball** — you passed a host path to npm but the container sees it at a different path. The workspace is mounted at `/workspace`, not at its host path. Use the container path:
 ```bash
 sbox run -- npm install /workspace/mypackage-1.0.0.tgz

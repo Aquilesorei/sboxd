@@ -34,16 +34,24 @@ pub fn execute(cli: &Cli, command: &PlanCommand) -> Result<ExitCode, SboxError> 
     let plan = resolve_execution_plan(cli, &loaded, target, &effective_command)?;
     let strict_security = crate::exec::strict_security_enabled(cli, &loaded.config);
 
-    print!(
-        "{}",
-        render_plan(
-            &loaded.config_path,
-            &plan,
-            strict_security,
-            command.show_command,
-            command.command.is_empty(),
-        )
-    );
+    match cli.output_format {
+        crate::cli::OutputFormat::Json => {
+            let obj = plan_to_json(&loaded.config_path, &plan, strict_security);
+            println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
+        }
+        crate::cli::OutputFormat::Text => {
+            print!(
+                "{}",
+                render_plan(
+                    &loaded.config_path,
+                    &plan,
+                    strict_security,
+                    command.show_command,
+                    command.command.is_empty(),
+                )
+            );
+        }
+    }
 
     // Append an inline security scan when the user passes --audit.
     // Gated behind a flag so `sbox plan` stays fast and deterministic by default.
@@ -192,6 +200,15 @@ pub(crate) fn render_plan(
     writeln!(output, "  network: {}", plan.policy.network).ok();
     writeln!(
         output,
+        "  network_policy: {}",
+        match plan.policy.network_policy {
+            crate::config::model::NetworkPolicy::Dns => "dns",
+            crate::config::model::NetworkPolicy::Firewall => "firewall",
+        }
+    )
+    .ok();
+    writeln!(
+        output,
         "  network_allow: {}",
         describe_network_allow(
             &plan.policy.network_allow,
@@ -199,6 +216,15 @@ pub(crate) fn render_plan(
         )
     )
     .ok();
+    if plan.policy.network != "off"
+        && (!plan.policy.network_allow.is_empty() || !plan.policy.network_allow_patterns.is_empty())
+    {
+        writeln!(
+            output,
+            "  note: `network_allow` is hostname/DNS-based and does not block direct IP connections"
+        )
+        .ok();
+    }
     writeln!(output, "  writable: {}", plan.policy.writable).ok();
     writeln!(
         output,
@@ -357,6 +383,61 @@ pub(crate) fn render_plan(
     output
 }
 
+fn plan_to_json(
+    config_path: &std::path::Path,
+    plan: &ExecutionPlan,
+    strict_security: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "config": config_path.display().to_string(),
+        "command": plan.command_string,
+        "argv": plan.command,
+        "profile": plan.profile_name,
+        "mode": format!("{:?}", plan.mode).to_lowercase(),
+        "backend": describe_backend(&plan.backend),
+        "image": {
+            "description": plan.image.description,
+            "trust": describe_image_trust(plan.image.trust),
+            "verify_signature": plan.image.verify_signature,
+        },
+        "workspace": {
+            "root": plan.workspace.root.display().to_string(),
+            "mount": plan.workspace.mount,
+            "sandbox_cwd": plan.workspace.sandbox_cwd,
+        },
+        "policy": {
+            "network": plan.policy.network,
+            "network_allow": plan.policy.network_allow.iter().map(|(h, ip)| {
+                serde_json::json!({"host": h, "ip": ip})
+            }).collect::<Vec<_>>(),
+            "writable": plan.policy.writable,
+            "no_new_privileges": plan.policy.no_new_privileges,
+            "read_only_rootfs": plan.policy.read_only_rootfs,
+            "reuse_container": plan.policy.reuse_container,
+        },
+        "environment": {
+            "variables": plan.environment.variables.iter().map(|v| {
+                serde_json::json!({"name": v.name, "value": v.value, "source": describe_env_source(&v.source)})
+            }).collect::<Vec<_>>(),
+            "denied": plan.environment.denied,
+        },
+        "audit": {
+            "install_style": plan.audit.install_style,
+            "strict_security": strict_security,
+            "trusted_image_required": crate::exec::trusted_image_required(plan, strict_security),
+            "lockfile": describe_lockfile_audit(&plan.audit.lockfile),
+            "pre_run": plan.audit.pre_run.iter().map(|argv| argv.join(" ")).collect::<Vec<_>>(),
+        },
+        "mounts": plan.mounts.iter().map(|m| serde_json::json!({
+            "kind": m.kind,
+            "source": m.source.as_ref().map(|p| p.display().to_string()),
+            "target": m.target,
+            "read_only": m.read_only,
+            "workspace": m.is_workspace,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn render_inline_audit(result: &crate::audit::InlineAuditResult) -> String {
     use crate::audit::InlineAuditStatus;
 
@@ -432,6 +513,7 @@ fn describe_profile_source(source: &ProfileSource) -> String {
         }
         ProfileSource::DefaultProfile => "default profile".to_string(),
         ProfileSource::ImplementationDefault => "implementation default".to_string(),
+        ProfileSource::Shadow => "shadow infrastructure".to_string(),
     }
 }
 
@@ -439,6 +521,7 @@ fn describe_mode_source(source: &ModeSource) -> &'static str {
     match source {
         ModeSource::CliOverride => "cli override",
         ModeSource::Profile => "profile",
+        ModeSource::Default => "default",
     }
 }
 

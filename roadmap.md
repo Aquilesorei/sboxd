@@ -201,11 +201,70 @@ A Linux, macOS, or Windows user can:
 
 ---
 
-## Remaining Work (Post-v3)
+## v4 Roadmap (Complete)
 
-- **`status` and `logs` subcommands** — monitor running reusable sessions
+### Phase 17: Observability — `sbox status` / `sbox logs` — Complete
+
+Goal: make reusable sessions actually observable.
+
+- **`sbox status`** — list all running sbox-managed containers for the current workspace; show profile name, image, uptime, and network policy
+- **`sbox logs [profile]`** — stream or tail stdout/stderr from a running reusable session; defaults to the most recently started session
+
+### Phase 18: Advanced Infrastructure & Zero-Config — Complete
+
+Goal: absorb existing Docker/Compose setups and provide a secure-by-default experience without any configuration.
+
+- **Shadow Infrastructure Mode**: auto-detects `Dockerfile` or `docker-compose.yml` and runs commands in a hardened sandbox mimicking the project's own stack; no `sbox.yaml` required.
+- **Smart Rebuilds**: tracks `mtime` of `Dockerfile` (or `image.build` path) and automatically triggers a rebuild if the file is newer than the local image.
+- **IP-level Firewall Policy**: opt-in `network_policy: firewall` using `nftables` in the container's network namespace for true egress enforcement (Linux rootful only).
+- **Docker Compose Integration**: sidecar service management via `compose:` block in `sbox.yaml`; automated lifecycle (up/down) during command execution.
+- **Custom Command Aliases**: defines `sbox <alias>` tasks in `sbox.yaml` with specific profiles and descriptions (e.g., `sbox build`, `sbox test`).
+- **Unified Backend Flag**: global `--backend` and `SBOX_BACKEND` env var for explicit Podman/Docker selection.
+- **Improved `sbox init`**: automatically imports ports, environment variables, and services from detected Compose files.
+
+---
+
+## v5 Roadmap
+- Both commands delegate to `podman ps` / `podman logs` filtered by the `sbox-` name prefix; Docker backend parity
+
+### Phase 18: Structured Output — `--output json`
+
+Goal: make every subcommand machine-readable and composable with `jq`.
+
+- **`--output json` global flag** — renders `sbox plan`, `sbox doctor`, `sbox status`, `sbox audit`, and `sbox shim --verify` as structured JSON instead of human text
+- Plan output maps directly to the `ExecutionPlan` fields; doctor output is an array of `{name, level, detail}` check results
+- Enables audit trails, CI tooling, and IDE integrations without screen-scraping
+
+### Phase 19: `sbox explain`
+
+Goal: onboard new users and debug policies without reading the source.
+
+- **`sbox explain <command>`** — given any shell command, explains in plain language: which profile would match, why, what network access it would have, which secrets would be visible, and what the sandbox prevents
+- Builds on `render_plan` output but formatted as prose rather than YAML-like key/value
+- Includes a "what sbox blocks" section tailored to the matched profile's policy
+
+### Phase 20: `sbox lint`
+
+Goal: static policy analysis — catch antipatterns before they become incidents.
+
+- **`sbox lint`** — analyses `sbox.yaml` without running anything and reports:
+  - Overly broad `network_allow` entries (e.g. `*` or `github.com`)
+  - Missing `require_pinned_image` when `verify_signature` is not set
+  - Sensitive env vars in `pass_through` that are not in `deny`
+  - Profiles with `network: on` and no `network_allow` (full internet access)
+  - Dispatch patterns that route package manager commands without an `install` role
+- Exit code 0 = clean, 1 = warnings, 2 = errors; `--strict` promotes warnings to errors
+- Integrates naturally into CI as a pre-commit or PR gate
+
+---
+
+## Remaining Work (Post-v4)
+
 - **Rebuild detection for `image.build`** — hash the Dockerfile and build context to detect when a rebuild is needed
 - **Remote runner mode** — execute plans on a remote host or in CI without a local container runtime
+- **GitHub Actions `sbox-action`** — reusable action that wraps any workflow step in a sandbox driven by `sbox.yaml`
+- **Lockfile integrity monitoring** — hash lockfiles before/after each run and alert on unexpected mutations
 - **Microvm/gVisor backend** — stronger isolation for higher-risk workloads if the threat model expands
-- **Wildcard DNS enforcement for unknown domains** — full enforcement for arbitrary `*.example.org` patterns requires a container-side DNS proxy (e.g. CoreDNS or dnsmasq); deferred
-- **Per-secret profile conditions** — `when_profiles` filtering is implemented; richer conditional logic (e.g. `when_command_matches`) is not
+- **Wildcard DNS enforcement** — full runtime enforcement requires a container-side DNS proxy (CoreDNS/dnsmasq); deferred
+- **Per-secret conditional logic** — `when_command_matches` and other fine-grained secret injection conditions
+- **Centralized policy server** — fetch `sbox.yaml` policy from a remote URL for org-wide governance

@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use sbox::config::model::{
-    BackendKind, CacheConfig, CapabilitiesSpec, Config, DispatchRule, EnvironmentConfig,
-    ExecutionMode, IdentityConfig, ImageConfig, MountConfig, MountType, ProfileConfig, ProfileRole,
-    RuntimeConfig, SecretConfig, WorkspaceConfig,
+    BackendKind, CacheConfig, CapabilitiesSpec, CommandConfig, Config, DispatchRule,
+    EnvironmentConfig, ExecutionMode, IdentityConfig, ImageConfig, MountConfig, MountType,
+    ProfileConfig, ProfileRole, RuntimeConfig, SecretConfig, WorkspaceConfig,
 };
 use sbox::config::validate::{collect_config_warnings, validate_config};
 
@@ -30,8 +30,9 @@ fn base_config() -> Config {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
-
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
 
@@ -45,6 +46,7 @@ fn base_config() -> Config {
             container_name: None,
             pull_policy: None,
             require_pinned_image: None,
+            compose: None,
         }),
         workspace: Some(WorkspaceConfig {
             root: Some(PathBuf::from(".")),
@@ -75,6 +77,7 @@ fn base_config() -> Config {
         dispatch: IndexMap::new(),
 
         package_manager: None,
+        commands: IndexMap::new(),
     }
 }
 
@@ -82,6 +85,38 @@ fn base_config() -> Config {
 fn accepts_valid_minimal_config() {
     let config = base_config();
     validate_config(&config).expect("valid config should pass");
+}
+
+#[test]
+fn rejects_command_alias_that_conflicts_with_builtin_subcommand() {
+    let mut config = base_config();
+    config.commands.insert(
+        "run".to_string(),
+        CommandConfig {
+            run: vec!["docker".to_string(), "compose".to_string(), "up".to_string()],
+            profile: None,
+            description: None,
+        },
+    );
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(error.to_string().contains("command alias `run` conflicts"));
+}
+
+#[test]
+fn rejects_command_alias_that_conflicts_with_builtin_alias() {
+    let mut config = base_config();
+    config.commands.insert(
+        "r".to_string(),
+        CommandConfig {
+            run: vec!["echo".to_string(), "hi".to_string()],
+            profile: None,
+            description: None,
+        },
+    );
+
+    let error = validate_config(&config).expect_err("validation should fail");
+    assert!(error.to_string().contains("command alias `r` conflicts"));
 }
 
 #[test]
@@ -375,8 +410,9 @@ fn accepts_valid_secret() {
             read_only_rootfs: None,
             reuse_container: None,
             shell: None,
-
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
     config.secrets.push(sbox::config::model::SecretConfig {
@@ -570,6 +606,7 @@ fn rejects_map_user_true_when_rootless_is_false() {
         container_name: None,
         pull_policy: None,
         require_pinned_image: None,
+        compose: None,
     });
     config.identity = Some(IdentityConfig {
         uid: None,
@@ -778,6 +815,8 @@ fn warns_on_install_profile_with_network_on_and_no_network_allow() {
             reuse_container: None,
             shell: None,
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
 
@@ -811,6 +850,8 @@ fn no_warning_for_install_profile_with_network_allow() {
             reuse_container: None,
             shell: None,
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
 
@@ -844,6 +885,8 @@ fn warns_on_credential_secret_not_restricted_from_install_profiles() {
             reuse_container: None,
             shell: None,
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
     config.secrets.push(SecretConfig {
@@ -886,6 +929,8 @@ fn no_warning_for_credential_secret_with_deny_roles() {
             reuse_container: None,
             shell: None,
             writable_paths: None,
+            network_policy: sbox::config::model::NetworkPolicy::Dns,
+            compose: None,
         },
     );
     config.secrets.push(SecretConfig {
@@ -916,6 +961,7 @@ fn warns_on_docker_without_rootless() {
         container_name: None,
         pull_policy: None,
         require_pinned_image: None,
+        compose: None,
     });
 
     let warnings = collect_config_warnings(&config);
@@ -936,6 +982,7 @@ fn no_warning_for_docker_with_rootless_true() {
         container_name: None,
         pull_policy: None,
         require_pinned_image: None,
+        compose: None,
     });
 
     let warnings = collect_config_warnings(&config);
@@ -956,6 +1003,7 @@ fn no_warning_for_podman_backend() {
         container_name: None,
         pull_policy: None,
         require_pinned_image: None,
+        compose: None,
     });
 
     let warnings = collect_config_warnings(&config);

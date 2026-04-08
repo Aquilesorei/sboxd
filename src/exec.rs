@@ -1,28 +1,73 @@
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
 use crate::cli::{Cli, ExecCommand, RunCommand};
-use crate::config::{LoadOptions, load_config};
+use crate::config::{BackendKind, LoadOptions, load_config};
 use crate::error::SboxError;
 use crate::resolve::{
     EnvVarSource, ExecutionPlan, ResolutionTarget, ResolvedEnvVar, resolve_execution_plan,
 };
+use crate::shadow::{detect_infrastructure, resolve_shadow_plan};
 
 pub fn execute_run(cli: &Cli, command: &RunCommand) -> Result<ExitCode, SboxError> {
-    let loaded = load_config(&LoadOptions {
+    let load_options = LoadOptions {
         workspace: cli.workspace.clone(),
         config: cli.config.clone(),
-    })?;
-    let mut plan = resolve_execution_plan(cli, &loaded, ResolutionTarget::Run, &command.command)?;
+    };
 
-    apply_env_overrides(&mut plan, &command.env)?;
+    let loaded_res = load_config(&load_options);
 
-    if command.dry_run {
+    match loaded_res {
+        Ok(loaded) => {
+            let mut plan = resolve_execution_plan(cli, &loaded, ResolutionTarget::Run, &command.command)?;
+            apply_env_overrides(&mut plan, &command.env)?;
+            run_plan(cli, &plan, command.dry_run, Some(&loaded))
+        }
+        Err(SboxError::ConfigNotFound(_)) if cli.config.is_none() => {
+            // Shadow Mode
+            let invocation_dir = std::env::current_dir().map_err(|e| SboxError::CurrentDirectory { source: e })?;
+            let workspace_root = crate::config::load::absolutize_path(cli.workspace.as_deref(), &invocation_dir)
+                .unwrap_or(invocation_dir.clone());
+            
+            let backend = match cli.backend {
+                Some(crate::cli::CliBackendKind::Podman) => BackendKind::Podman,
+                Some(crate::cli::CliBackendKind::Docker) => BackendKind::Docker,
+                None => {
+                    // Check environment variable
+                    match std::env::var("SBOX_BACKEND").as_deref() {
+                        Ok("podman") => BackendKind::Podman,
+                        Ok("docker") => BackendKind::Docker,
+                        _ => {
+                            // Default detection
+                            if std::process::Command::new("podman").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok() {
+                                BackendKind::Podman
+                            } else {
+                                BackendKind::Docker
+                            }
+                        }
+                    }
+                }
+            };
+
+            let infra = detect_infrastructure(&workspace_root, backend.clone());
+            let mut plan = resolve_shadow_plan(infra, command.command.clone(), &workspace_root, &invocation_dir, backend)?;
+            apply_env_overrides(&mut plan, &command.env)?;
+            run_plan(cli, &plan, command.dry_run, None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn run_plan(cli: &Cli, plan: &ExecutionPlan, dry_run: bool, loaded: Option<&crate::config::load::LoadedConfig>) -> Result<ExitCode, SboxError> {
+    if dry_run {
+        let config_path = loaded.map(|l| l.config_path.as_path()).unwrap_or_else(|| std::path::Path::new("shadow"));
+        let strict = loaded.map(|l| strict_security_enabled(cli, &l.config)).unwrap_or(cli.strict_security);
         print!(
             "{}",
             crate::plan::render_plan(
-                &loaded.config_path,
-                &plan,
-                strict_security_enabled(cli, &loaded.config),
+                config_path,
+                plan,
+                strict,
                 true,
                 false
             )
@@ -30,9 +75,15 @@ pub fn execute_run(cli: &Cli, command: &RunCommand) -> Result<ExitCode, SboxErro
         return Ok(ExitCode::SUCCESS);
     }
 
-    validate_execution_safety(&plan, strict_security_enabled(cli, &loaded.config))?;
-    run_pre_run_commands(&plan)?;
-    execute_plan(&plan)
+    let strict = loaded.map(|l| strict_security_enabled(cli, &l.config)).unwrap_or(cli.strict_security);
+    validate_execution_safety(plan, strict)?;
+    run_pre_run_commands(plan)?;
+    let compose_cleanup = run_compose_up(plan)?;
+    let result = execute_plan(plan);
+    if let Some(cleanup) = compose_cleanup {
+        let _ = cleanup.run();
+    }
+    result
 }
 
 pub fn execute_exec(cli: &Cli, command: &ExecCommand) -> Result<ExitCode, SboxError> {
@@ -57,8 +108,76 @@ fn execute(
     let plan = resolve_execution_plan(cli, &loaded, target, command)?;
     validate_execution_safety(&plan, strict_security_enabled(cli, &loaded.config))?;
     run_pre_run_commands(&plan)?;
+    let compose_cleanup = run_compose_up(&plan)?;
+    let result = execute_plan(&plan);
+    if let Some(cleanup) = compose_cleanup {
+        let _ = cleanup.run();
+    }
+    result
+}
 
-    execute_plan(&plan)
+pub fn execute_custom_command(cli: &Cli) -> Result<ExitCode, SboxError> {
+    let load_options = LoadOptions {
+        workspace: cli.workspace.clone(),
+        config: cli.config.clone(),
+    };
+
+    let loaded_res = load_config(&load_options);
+
+    match loaded_res {
+        Ok(loaded) => {
+            let name = &cli.custom_command[0];
+            let config_command =
+                loaded
+                    .config
+                    .commands
+                    .get(name)
+                    .ok_or_else(|| SboxError::UnknownCommand {
+                        name: name.clone(),
+                    })?;
+
+            let mut full_command = config_command.run.clone();
+            full_command.extend(cli.custom_command.iter().skip(1).cloned());
+
+            let target = match &config_command.profile {
+                Some(profile) => ResolutionTarget::Exec { profile },
+                None => ResolutionTarget::Run,
+            };
+
+            let plan = resolve_execution_plan(cli, &loaded, target, &full_command)?;
+
+            run_plan(cli, &plan, false, Some(&loaded))
+        }
+        Err(SboxError::ConfigNotFound(_)) if cli.config.is_none() => {
+            // Shadow Mode: if we got here, it's because it was an unknown subcommand that might be a command to run directly in shadow mode
+            let invocation_dir = std::env::current_dir().map_err(|e| SboxError::CurrentDirectory { source: e })?;
+            let workspace_root = crate::config::load::absolutize_path(cli.workspace.as_deref(), &invocation_dir)
+                .unwrap_or(invocation_dir.clone());
+            
+            let backend = match cli.backend {
+                Some(crate::cli::CliBackendKind::Podman) => BackendKind::Podman,
+                Some(crate::cli::CliBackendKind::Docker) => BackendKind::Docker,
+                None => {
+                    match std::env::var("SBOX_BACKEND").as_deref() {
+                        Ok("podman") => BackendKind::Podman,
+                        Ok("docker") => BackendKind::Docker,
+                        _ => {
+                            if std::process::Command::new("podman").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok() {
+                                BackendKind::Podman
+                            } else {
+                                BackendKind::Docker
+                            }
+                        }
+                    }
+                }
+            };
+
+            let infra = detect_infrastructure(&workspace_root, backend.clone());
+            let plan = resolve_shadow_plan(infra, cli.custom_command.clone(), &workspace_root, &invocation_dir, backend)?;
+            run_plan(cli, &plan, false, None)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn apply_env_overrides(plan: &mut ExecutionPlan, overrides: &[String]) -> Result<(), SboxError> {
@@ -135,7 +254,7 @@ pub(crate) fn execute_host(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> 
     Ok(status_to_exit_code(status))
 }
 
-pub(crate) fn status_to_exit_code(status: std::process::ExitStatus) -> ExitCode {
+pub fn status_to_exit_code(status: std::process::ExitStatus) -> ExitCode {
     match status.code() {
         Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         None => ExitCode::from(1),
@@ -155,6 +274,30 @@ pub(crate) fn validate_execution_safety(
 ) -> Result<(), SboxError> {
     if !matches!(plan.mode, crate::config::model::ExecutionMode::Sandbox) {
         return Ok(());
+    }
+
+    if plan.policy.network_policy == crate::config::model::NetworkPolicy::Firewall {
+        if plan.policy.network == "off" {
+            return Ok(());
+        }
+
+        if !cfg!(target_os = "linux") {
+            return Err(SboxError::FirewallPolicyUnavailable {
+                reason: "`network_policy: firewall` is only supported on Linux".to_string(),
+            });
+        }
+
+        if plan.rootless {
+            return Err(SboxError::FirewallPolicyUnavailable {
+                reason: "`network_policy: firewall` requires `runtime.rootless: false`".to_string(),
+            });
+        }
+
+        if unsafe { libc::geteuid() } != 0 {
+            return Err(SboxError::FirewallPolicyUnavailable {
+                reason: "`network_policy: firewall` requires running sbox as root (e.g. via sudo)".to_string(),
+            });
+        }
     }
 
     if trusted_image_required(plan, strict_security)
@@ -195,13 +338,16 @@ pub(crate) fn validate_execution_safety(
     }
 
     if plan.policy.network == "off" || !plan.audit.install_style {
+        validate_firewall_policy(plan)?;
         return Ok(());
     }
 
     if plan.audit.sensitive_pass_through_vars.is_empty() {
+        validate_firewall_policy(plan)?;
         return Ok(());
     }
 
+    validate_firewall_policy(plan)?;
     Err(SboxError::UnsafeExecutionPolicy {
         command: plan.command_string.clone(),
         reason: format!(
@@ -209,6 +355,123 @@ pub(crate) fn validate_execution_safety(
             plan.audit.sensitive_pass_through_vars.join(", ")
         ),
     })
+}
+
+fn validate_firewall_policy(plan: &ExecutionPlan) -> Result<(), SboxError> {
+    if plan.policy.network_policy != crate::config::model::NetworkPolicy::Firewall {
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        return Err(SboxError::FirewallPolicyUnavailable {
+            reason: "firewall network policy is only supported on Linux".to_string(),
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if plan.rootless {
+            return Err(SboxError::FirewallPolicyUnavailable {
+                reason: "firewall network policy requires rootful execution (rootless: false)".to_string(),
+            });
+        }
+
+        if unsafe { libc::getuid() } != 0 {
+            return Err(SboxError::FirewallPolicyUnavailable {
+                reason: "firewall network policy requires root privileges (run with sudo)".to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn run_compose_up(plan: &ExecutionPlan) -> Result<Option<ComposeCleanup>, SboxError> {
+    let Some(compose) = &plan.compose else {
+        return Ok(None);
+    };
+
+    let (backend, mut args) = compose_command(plan.backend.clone(), &compose.file, "up");
+    args.extend([
+        "-d".to_string(),
+    ]);
+    if !compose.services.is_empty() {
+        args.extend(compose.services.iter().cloned());
+    }
+
+    println!("Starting compose services...");
+    let status = Command::new(&backend)
+        .args(&args)
+        .current_dir(&plan.workspace.root)
+        .status()
+        .map_err(|source| SboxError::CommandSpawn {
+            program: backend.clone(),
+            source,
+        })?;
+
+    if !status.success() {
+        return Err(SboxError::BackendCommandFailed {
+            backend: backend.clone(),
+            command: format!("{} {}", backend, args.join(" ")),
+            status: status.code().unwrap_or(1),
+        });
+    }
+
+    Ok(Some(ComposeCleanup {
+        backend,
+        file: compose.file.clone(),
+        services: compose.services.clone(),
+    }))
+}
+
+fn compose_command(
+    backend: crate::config::BackendKind,
+    file: &std::path::Path,
+    verb: &str,
+) -> (String, Vec<String>) {
+    match backend {
+        crate::config::BackendKind::Podman => (
+            "podman-compose".to_string(),
+            vec![
+                "-f".to_string(),
+                file.display().to_string(),
+                verb.to_string(),
+            ],
+        ),
+        crate::config::BackendKind::Docker => (
+            "docker".to_string(),
+            vec![
+                "compose".to_string(),
+                "-f".to_string(),
+                file.display().to_string(),
+                verb.to_string(),
+            ],
+        ),
+    }
+}
+
+pub struct ComposeCleanup {
+    backend: String,
+    file: PathBuf,
+    services: Vec<String>,
+}
+
+impl ComposeCleanup {
+    pub fn run(self) -> Result<(), SboxError> {
+        let backend_kind = if self.backend == "docker" {
+            crate::config::BackendKind::Docker
+        } else {
+            crate::config::BackendKind::Podman
+        };
+        let (backend, mut args) = compose_command(backend_kind, &self.file, "stop");
+        if !self.services.is_empty() {
+            args.extend(self.services);
+        }
+
+        let _ = Command::new(&backend).args(&args).status();
+        Ok(())
+    }
 }
 
 pub(crate) fn run_pre_run_commands(plan: &ExecutionPlan) -> Result<(), SboxError> {
@@ -258,8 +521,8 @@ pub(crate) fn strict_security_enabled(cli: &Cli, config: &crate::config::model::
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_env_overrides, is_valid_env_name, strict_security_enabled, trusted_image_required,
-        validate_execution_safety,
+        apply_env_overrides, compose_command, is_valid_env_name, strict_security_enabled,
+        trusted_image_required, validate_execution_safety,
     };
     use crate::config::model::ExecutionMode;
     use crate::resolve::{
@@ -305,6 +568,7 @@ mod tests {
                 pull_policy: None,
                 network_allow: Vec::new(),
                 network_allow_patterns: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
             },
             environment: ResolvedEnvironment {
                 variables: vec![ResolvedEnvVar {
@@ -318,6 +582,7 @@ mod tests {
             caches: Vec::new(),
             secrets: Vec::new(),
             user: ResolvedUser::KeepId,
+            rootless: true,
             audit: ExecutionAudit {
                 install_style: true,
                 trusted_image_required: false,
@@ -330,6 +595,7 @@ mod tests {
                 },
                 pre_run: Vec::new(),
             },
+            compose: None,
         }
     }
 
@@ -411,6 +677,17 @@ mod tests {
     }
 
     #[test]
+    fn docker_compose_uses_docker_cli_subcommand() {
+        let (program, args) = compose_command(
+            crate::config::BackendKind::Docker,
+            std::path::Path::new("docker-compose.yml"),
+            "up",
+        );
+        assert_eq!(program, "docker");
+        assert_eq!(args, vec!["compose", "-f", "docker-compose.yml", "up"]);
+    }
+
+    #[test]
     fn env_override_replaces_existing_variable() {
         let mut plan = sample_plan();
         plan.environment.variables.push(ResolvedEnvVar {
@@ -433,11 +710,8 @@ mod tests {
     #[test]
     fn env_override_accepts_multiple_entries() {
         let mut plan = sample_plan();
-        apply_env_overrides(
-            &mut plan,
-            &["FOO=bar".to_string(), "BAZ=qux".to_string()],
-        )
-        .expect("multiple overrides should succeed");
+        apply_env_overrides(&mut plan, &["FOO=bar".to_string(), "BAZ=qux".to_string()])
+            .expect("multiple overrides should succeed");
         let names: Vec<_> = plan
             .environment
             .variables
@@ -495,7 +769,11 @@ mod tests {
             verbose: 0,
             quiet: false,
             strict_security: true,
-            command: crate::cli::Commands::Doctor(crate::cli::DoctorCommand::default()),
+            output_format: crate::cli::OutputFormat::Text,
+            command: Some(crate::cli::Commands::Doctor(
+                crate::cli::DoctorCommand::default(),
+            )),
+            custom_command: Vec::new(),
         };
         let config = crate::config::model::Config {
             version: 1,
@@ -511,6 +789,7 @@ mod tests {
             dispatch: Default::default(),
 
             package_manager: None,
+            commands: Default::default(),
         };
 
         assert!(strict_security_enabled(&cli, &config));

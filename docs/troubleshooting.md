@@ -65,7 +65,7 @@ podman inspect node:22-bookworm-slim --format '{{index .RepoDigests 0}}'
 
 ### `EROFS: read-only file system`
 
-**Cause:** npm is trying to write to a file not in `writable_paths`.
+**Cause:** npm or another package manager is trying to write to a path not covered by `writable_paths`.
 
 Common cases:
 - `package.json` or `package-lock.json` — npm wants to update them during install
@@ -85,6 +85,8 @@ workspace:
     - node_modules
     - package-lock.json
 ```
+
+For lockfiles, listing the file path is enough. sbox expands that to a writable mount on the parent directory so tools like npm, uv, and cargo can rewrite the file atomically.
 
 ### `ENOENT: no such file or directory` for a package tarball
 
@@ -184,7 +186,7 @@ environment:
 
 **Cause:** sbox walks up from the current directory looking for `sbox.yaml`. If none is found, it errors.
 
-**Fix:** Run `sbox init --interactive` in your project root, or specify the config explicitly:
+**Fix:** Run `sbox init` or `sbox init --interactive` in your project root, or specify the config explicitly:
 
 ```bash
 sbox --config /path/to/sbox.yaml run -- npm install
@@ -246,10 +248,12 @@ which npm   # should show ~/.local/bin/npm
 
 **Cause:** The current directory has no lockfile sbox recognises (or the lockfile is in a subdirectory).
 
-**Fix:** Run from the project root, or use a named preset:
+**Fix:** Run from the project root, use plain `sbox init` for broader repo scanning, or use a named preset:
 
 ```bash
 cd myproject
+sbox init
+# or
 sbox init --preset node
 ```
 

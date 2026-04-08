@@ -89,22 +89,56 @@ sbox completions fish  >  ~/.config/fish/completions/sbox.fish
 sbox doctor
 ```
 
+> **Tip:** Many `sbox` commands have single-letter shortcuts (e.g., `sbox d` for `sbox doctor`, `sbox r` for `sbox run`). See the [Usage Guide](usage.md) for a full list.
+
 Checks backend availability, rootless mode, signature verification support, and shim health. Fix anything it flags before continuing.
 
 ---
 
-## Add sbox to a project
+## Zero-Config Mode (Shadow Infrastructure)
 
-### Option 1 — auto-detect from lockfile (fastest)
+If your project already has a `Dockerfile` or a Docker Compose file (`docker-compose.yml`, `compose.yaml`), you can use `sbox` immediately without creating an `sbox.yaml` file.
 
-If you already have a lockfile, sbox can figure out the right preset automatically:
+```bash
+# In a project with a Dockerfile
+sbox run -- npm install
+
+# In a project with a docker-compose.yml
+sbox run --service app -- npm install
+```
+
+When no `sbox.yaml` is present, `sbox` enters **Shadow Mode**:
+1. **Case A (Compose)**: It detects your Compose file, identifies the primary service (or use `--service`), and runs your command in a hardened container sharing the same network as your sidecars.
+2. **Case B (Dockerfile)**: It builds a temporary image from your `Dockerfile` and runs your command inside it.
+3. **Case C (Fallback)**: If no infrastructure is found, it uses a default secure `ubuntu:24.04` image with network access disabled by default.
+
+This allows you to get the security benefits of `sbox` on any project with zero setup.
+
+---
+
+## Add sbox to a project (Explicit Config)
+
+### Option 1 — smart auto-detect (fastest)
+
+In most projects, plain `sbox init` is enough. It scans the repo and adapts to what already exists:
+- lockfiles and manifests such as `package.json`, `pyproject.toml`, `Cargo.toml`, and `go.mod`
+- `Dockerfile` or `Containerfile`
+- Compose files such as `docker-compose.yml`, `compose.yaml`, or `podman-compose.yml`
 
 ```bash
 cd myproject
-sbox init --from-lockfile
+sbox init
 ```
 
-Detects `package-lock.json` → npm, `uv.lock` → uv, `Cargo.lock` → cargo, `Gemfile.lock` → bundler, `composer.lock` → composer, etc.
+Examples:
+- `package-lock.json` → npm
+- `uv.lock` → uv
+- `Cargo.toml` / `Cargo.lock` → cargo
+- `go.mod` / `go.sum` → go
+- `Dockerfile` / `Containerfile` → uses the existing build definition for `image.build`
+- Compose files → imports sidecars and infers backend preference
+
+`sbox init --from-lockfile` still exists if you want lockfile-only detection.
 
 ### Option 2 — named preset
 
@@ -121,16 +155,23 @@ sbox init --preset generic    # Blank   — ubuntu:24.04, manual profiles
 ```bash
 cd myproject
 sbox init --interactive
+sbox init --interactive --all
 ```
 
-The wizard asks two to five questions depending on your choice:
+The wizard has two behaviors:
 
 **Simple mode** (recommended for most projects):
 
 1. Setup mode → `simple`
-2. Package manager → npm / yarn / pnpm / bun / uv / pip / poetry / cargo / go / composer / bundler
-3. Container image → default shown, press Enter to accept
-4. Container backend → auto / podman / docker
+2. Package manager
+3. Container image
+4. Container backend
+5. Optional command aliases
+
+What changes in practice:
+- if the repo already fixes the package manager, `sbox` uses it and skips that prompt
+- if the repo already has `Dockerfile` / `Containerfile` or Compose image info, `sbox` uses it and skips or narrows the image/backend questions
+- where a field is optional, the prompt includes a `skip` path
 
 Writes a minimal config with `package_manager:`. sbox infers install profiles, build profiles, network policy, and writable paths from the preset.
 
@@ -143,8 +184,15 @@ Writes a minimal config with `package_manager:`. sbox infers install profiles, b
 5. Default network access
 6. Writable paths
 7. Whether to add dispatch rules
+8. Optional command aliases
 
 Writes a config with explicit `profiles:` and `dispatch:` for full manual control.
+
+**`--all` mode**:
+- `sbox init --interactive --all`
+- starts from a blank interactive flow
+- does not auto-apply detected defaults from the repo
+- useful when you want complete manual control even in a repo with existing Docker/Podman files
 
 Press Enter at any prompt to accept the default.
 
@@ -155,6 +203,7 @@ Press Enter at any prompt to accept the default.
 ```bash
 sbox plan -- npm install           # show resolved policy
 sbox plan --audit -- npm install   # show policy + run npm audit inline
+sbox --output-format json plan -- npm install  # render as machine-readable JSON
 sbox run --dry-run -- npm install  # show policy + the exact backend command, no execution
 ```
 

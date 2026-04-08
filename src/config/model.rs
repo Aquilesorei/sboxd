@@ -40,6 +40,60 @@ pub struct Config {
 
     #[serde(default)]
     pub package_manager: Option<PackageManagerConfig>,
+
+    #[serde(default)]
+    pub commands: IndexMap<String, CommandConfig>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_commands() {
+        let yaml = r#"
+version: 1
+commands:
+  build:
+    run: ["cargo", "build", "--release"]
+    profile: build
+    description: "Build project"
+  test:
+    run: ["cargo", "test"]
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.commands.len(), 2);
+        
+        let build = config.commands.get("build").unwrap();
+        assert_eq!(build.run, vec!["cargo", "build", "--release"]);
+        assert_eq!(build.profile, Some("build".to_string()));
+        assert_eq!(build.description, Some("Build project".to_string()));
+        
+        let test = config.commands.get("test").unwrap();
+        assert_eq!(test.run, vec!["cargo", "test"]);
+        assert_eq!(test.profile, None);
+        assert_eq!(test.description, None);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CommandConfig {
+    pub run: Vec<String>,
+    pub profile: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkPolicy {
+    Dns,
+    Firewall,
+}
+
+impl Default for NetworkPolicy {
+    fn default() -> Self {
+        Self::Dns
+    }
 }
 
 /// Top-level `package_manager:` block. Generates install/build/default profiles and dispatch
@@ -82,6 +136,13 @@ pub enum PullPolicy {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ComposeConfig {
+    pub file: Option<PathBuf>,
+    #[serde(default)]
+    pub services: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct RuntimeConfig {
     pub backend: Option<BackendKind>,
     pub rootless: Option<bool>,
@@ -90,6 +151,7 @@ pub struct RuntimeConfig {
     pub container_name: Option<String>,
     pub pull_policy: Option<PullPolicy>,
     pub require_pinned_image: Option<bool>,
+    pub compose: Option<ComposeConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,6 +305,9 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub ports: Vec<String>,
 
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
+
     /// When non-empty and `network` is `on`, restrict outbound DNS to only these hostnames.
     /// Implemented by resolving each domain on the host at container-start time and injecting
     /// `--add-host` entries, then pointing the container's DNS at a non-existent server so
@@ -259,6 +324,8 @@ pub struct ProfileConfig {
     /// When set, overrides the workspace-level `writable_paths` for this profile.
     /// Only the listed paths are mounted read-write; all others in the workspace remain read-only.
     pub writable_paths: Option<Vec<String>>,
+
+    pub compose: Option<ComposeConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

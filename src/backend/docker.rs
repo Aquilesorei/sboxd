@@ -10,41 +10,147 @@ use crate::resolve::{
     ExecutionPlan, ResolvedImageSource, ResolvedMount, ResolvedSecret, ResolvedUser,
 };
 
-pub fn execute(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
-    if plan.policy.reuse_container {
-        return execute_via_reusable_session(plan, false);
-    }
+// ── Pending-output extraction ─────────────────────────────────────────────────
+//
+// Same approach as backend/podman.rs — see that file for the full rationale.
+// Short version: pre-create missing output files on the host so they can be
+// bind-mounted writably (a file-level mount overrides a read-only workspace
+// mount).  If pre-creation fails, fall back to naming the container and using
+// `docker cp` to extract the file after exit.
 
-    validate_runtime_inputs(plan)?;
-    let image = resolve_container_image(plan)?;
-    let args = build_run_args(plan, &image)?;
+struct PendingOutput {
+    container_target: String,
+    final_path: PathBuf,
+}
 
-    let mut child = Command::new("docker");
-    child.args(&args);
-    child.current_dir(&plan.workspace.effective_host_dir);
-    child.stdin(Stdio::inherit());
-    child.stdout(Stdio::inherit());
-    child.stderr(Stdio::inherit());
-
-    let status = child
-        .status()
+fn inspect_container_pid(container_name: &str) -> Result<i32, SboxError> {
+    let output = Command::new("docker")
+        .args(["inspect", "-f", "{{.State.Pid}}", container_name])
+        .stdin(Stdio::null())
+        .output()
         .map_err(|source| SboxError::BackendUnavailable {
             backend: "docker".to_string(),
             source,
         })?;
 
-    Ok(status_to_exit_code(status))
+    if !output.status.success() {
+        return Err(SboxError::BackendCommandFailed {
+            backend: "docker".to_string(),
+            command: format!("docker inspect -f {{.State.Pid}} {container_name}"),
+            status: output.status.code().unwrap_or(1),
+        });
+    }
+
+    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let pid: i32 = pid_str.parse().map_err(|_| SboxError::FirewallPolicyUnavailable {
+        reason: "could not parse container PID for firewall enforcement".to_string(),
+    })?;
+    if pid <= 0 {
+        return Err(SboxError::FirewallPolicyUnavailable {
+            reason: "container PID unavailable for firewall enforcement".to_string(),
+        });
+    }
+    Ok(pid)
+}
+
+fn partition_pending_outputs(
+    mounts: &[ResolvedMount],
+    workspace_root: &std::path::Path,
+) -> (Vec<ResolvedMount>, Vec<PendingOutput>) {
+    let mut effective: Vec<ResolvedMount> = Vec::with_capacity(mounts.len());
+    let mut pending: Vec<PendingOutput> = Vec::new();
+
+    for mount in mounts {
+        // Pre-create missing host-side output files before the pending check.
+        // A file-level writable bind mount takes precedence over a read-only
+        // workspace bind mount, so the container can write through it directly.
+        if mount.kind == "bind" && mount.create && !mount.read_only {
+            if let Some(source) = mount.source.as_ref() {
+                if source.extension().is_some() && !source.exists() {
+                    if let Some(parent) = source.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(source, crate::backend::podman::lockfile_seed(source, workspace_root));
+                }
+            }
+        }
+
+        let is_pending = mount.kind == "bind"
+            && mount.create
+            && mount.source.as_ref().is_some_and(|s| {
+                s.extension().is_some() && !s.exists()
+            });
+
+        if is_pending {
+            let final_path = mount.source.as_ref().unwrap().clone();
+            pending.push(PendingOutput {
+                container_target: mount.target.clone(),
+                final_path,
+            });
+        } else {
+            effective.push(mount.clone());
+        }
+    }
+
+    (effective, pending)
+}
+
+fn copy_pending_outputs(container_name: &str, pending: &[PendingOutput]) -> Result<(), SboxError> {
+    for p in pending {
+        let src = format!("{}:{}", container_name, p.container_target);
+        let status = Command::new("docker")
+            .args(["cp", &src, &p.final_path.display().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|source| SboxError::BackendUnavailable {
+                backend: "docker".to_string(),
+                source,
+            })?;
+        let _ = status;
+    }
+    Ok(())
+}
+
+pub fn execute(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
+    if plan.policy.reuse_container {
+        return execute_via_reusable_session(plan, false);
+    }
+    run_sandboxed(plan, false)
 }
 
 pub fn execute_interactive(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
     if plan.policy.reuse_container {
         return execute_via_reusable_session(plan, true);
     }
-
-    validate_runtime_inputs(plan)?;
-    let image = resolve_container_image(plan)?;
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let args = build_run_args_with_options(plan, &image, tty)?;
+    run_sandboxed(plan, tty)
+}
+
+fn run_sandboxed(plan: &ExecutionPlan, tty: bool) -> Result<ExitCode, SboxError> {
+    let (effective_mounts, pending_outputs) = partition_pending_outputs(&plan.mounts, &plan.workspace.root);
+
+    validate_runtime_inputs_with_mounts(&effective_mounts, &plan.secrets, &plan.workspace.root)?;
+    let image = resolve_container_image(plan)?;
+
+    let needs_name_for_firewall = plan.policy.network_policy == crate::config::model::NetworkPolicy::Firewall
+        && plan.policy.network != "off"
+        && !plan.policy.network_allow.is_empty();
+    let container_name = if pending_outputs.is_empty() && !needs_name_for_firewall {
+        None
+    } else {
+        Some(format!("sbox-{}", std::process::id()))
+    };
+
+    let args = build_run_args_impl(
+        plan,
+        &effective_mounts,
+        &image,
+        tty,
+        &plan.command,
+        container_name.as_deref(),
+    )?;
 
     let mut child = Command::new("docker");
     child.args(&args);
@@ -53,12 +159,40 @@ pub fn execute_interactive(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> 
     child.stdout(Stdio::inherit());
     child.stderr(Stdio::inherit());
 
-    let status = child
-        .status()
+    let mut child = child
+        .spawn()
         .map_err(|source| SboxError::BackendUnavailable {
             backend: "docker".to_string(),
             source,
         })?;
+
+    if needs_name_for_firewall {
+        let name = container_name.as_deref().expect("named when firewall requested");
+        let pid = inspect_container_pid(name)?;
+        crate::firewall::apply_firewall_in_netns(
+            pid,
+            &crate::firewall::FirewallSpec {
+                allow_ips: plan.policy.network_allow.iter().map(|(_, ip)| ip.clone()).collect(),
+            },
+        )?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|source| SboxError::BackendUnavailable {
+            backend: "docker".to_string(),
+            source,
+        })?;
+
+    if let Some(name) = &container_name {
+        copy_pending_outputs(name, &pending_outputs)?;
+        let _ = Command::new("docker")
+            .args(["rm", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 
     Ok(status_to_exit_code(status))
 }
@@ -108,7 +242,7 @@ fn resolve_container_image(plan: &ExecutionPlan) -> Result<String, SboxError> {
 }
 
 pub fn build_run_args(plan: &ExecutionPlan, image: &str) -> Result<Vec<String>, SboxError> {
-    build_run_args_with_options(plan, image, false)
+    build_run_args_impl(plan, &plan.mounts, image, false, &plan.command, None)
 }
 
 pub fn build_run_args_with_options(
@@ -116,7 +250,28 @@ pub fn build_run_args_with_options(
     image: &str,
     tty: bool,
 ) -> Result<Vec<String>, SboxError> {
-    let mut args = vec!["run".to_string(), "--rm".to_string(), "-i".to_string()];
+    build_run_args_impl(plan, &plan.mounts, image, tty, &plan.command, None)
+}
+
+fn build_run_args_impl(
+    plan: &ExecutionPlan,
+    mounts: &[ResolvedMount],
+    image: &str,
+    tty: bool,
+    command: &[String],
+    container_name: Option<&str>,
+) -> Result<Vec<String>, SboxError> {
+    let mut args = vec!["run".to_string()];
+    match container_name {
+        Some(name) => {
+            args.push("--name".to_string());
+            args.push(name.to_string());
+        }
+        None => {
+            args.push("--rm".to_string());
+        }
+    }
+    args.push("-i".to_string());
 
     if tty {
         args.push("-t".to_string());
@@ -156,7 +311,9 @@ pub fn build_run_args_with_options(
         }
     }
 
-    if !plan.policy.network_allow.is_empty() {
+    if plan.policy.network_policy != crate::config::model::NetworkPolicy::Firewall
+        && !plan.policy.network_allow.is_empty()
+    {
         args.push("--dns".to_string());
         args.push("192.0.2.1".to_string());
         for (hostname, ip) in &plan.policy.network_allow {
@@ -174,7 +331,7 @@ pub fn build_run_args_with_options(
 
     for port in &plan.policy.ports {
         args.push("--publish".to_string());
-        args.push(port.clone());
+        args.push(crate::backend::podman::normalize_port_spec(port));
     }
 
     // Docker has no --userns keep-id; always map to explicit uid:gid using the current process
@@ -192,7 +349,7 @@ pub fn build_run_args_with_options(
         }
     }
 
-    for mount in &plan.mounts {
+    for mount in mounts {
         append_mount_args(&mut args, mount)?;
     }
 
@@ -238,8 +395,14 @@ pub fn build_run_args_with_options(
         args.push(pull_policy.clone());
     }
 
-    args.push(image.to_string());
-    args.extend(plan.command.iter().cloned());
+    if let Some((program, rest)) = command.split_first() {
+        args.push("--entrypoint".to_string());
+        args.push(program.clone());
+        args.push(image.to_string());
+        args.extend(rest.iter().cloned());
+    } else {
+        args.push(image.to_string());
+    }
 
     Ok(args)
 }
@@ -323,10 +486,11 @@ fn ensure_reusable_container(
         session_name.to_string(),
         "--workdir".to_string(),
         plan.workspace.sandbox_cwd.clone(),
+        "--entrypoint".to_string(),
+        "sleep".to_string(),
     ];
     append_container_settings(&mut create_args, plan)?;
     create_args.push(image.to_string());
-    create_args.push("sleep".to_string());
     create_args.push("infinity".to_string());
 
     let create_status = Command::new("docker")
@@ -436,7 +600,7 @@ fn append_container_settings(
 
     for port in &plan.policy.ports {
         args.push("--publish".to_string());
-        args.push(port.clone());
+        args.push(crate::backend::podman::normalize_port_spec(port));
     }
 
     match &plan.user {
@@ -540,6 +704,20 @@ fn validate_runtime_inputs(plan: &ExecutionPlan) -> Result<(), SboxError> {
     }
     for secret in &plan.secrets {
         validate_secret_source(secret, &plan.workspace.root)?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_inputs_with_mounts(
+    mounts: &[ResolvedMount],
+    secrets: &[ResolvedSecret],
+    workspace_root: &Path,
+) -> Result<(), SboxError> {
+    for mount in mounts {
+        validate_mount_source(mount)?;
+    }
+    for secret in secrets {
+        validate_secret_source(secret, workspace_root)?;
     }
     Ok(())
 }
@@ -761,10 +939,7 @@ fn current_uid_gid() -> (u32, u32) {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn run_id_flag(flag: &str) -> Option<u32> {
-    let out = std::process::Command::new("id")
-        .arg(flag)
-        .output()
-        .ok()?;
+    let out = std::process::Command::new("id").arg(flag).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
@@ -784,19 +959,34 @@ fn ensure_built_image(
 ) -> Result<(), SboxError> {
     // docker image inspect exits 0 if the image exists, non-zero if not.
     let exists_status = Command::new("docker")
-        .args(["image", "inspect", "--format", "", tag])
+        .args(["image", "inspect", "--format", "{{.Created}}", tag])
         .current_dir(workspace_root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .map_err(|source| SboxError::BackendUnavailable {
             backend: "docker".to_string(),
             source,
         })?;
 
-    if exists_status.success() {
-        return Ok(());
+    if exists_status.status.success() {
+        if let Ok(metadata) = fs::metadata(workspace_root.join(recipe_path)) {
+            if let Ok(modified) = metadata.modified() {
+                let created_str = String::from_utf8_lossy(&exists_status.stdout).trim().to_string();
+                if let Ok(created_dt) = chrono::DateTime::parse_from_rfc3339(&created_str) {
+                    if modified > created_dt.into() {
+                        println!("Dockerfile `{}` is newer than image `{}`. Rebuilding...", recipe_path.display(), tag);
+                    } else {
+                        return Ok(());
+                    }
+                } else {
+                    return Ok(());
+                }
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
     }
 
     let build_status = Command::new("docker")
@@ -886,6 +1076,7 @@ mod tests {
                 pull_policy: None,
                 network_allow: Vec::new(),
                 network_allow_patterns: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
             },
             environment: ResolvedEnvironment {
                 variables: Vec::new(),
@@ -895,6 +1086,7 @@ mod tests {
             caches: Vec::new(),
             secrets: Vec::new(),
             user: ResolvedUser::Default,
+            rootless: false,
             audit: crate::resolve::ExecutionAudit {
                 install_style: false,
                 trusted_image_required: false,
@@ -907,6 +1099,7 @@ mod tests {
                 },
                 pre_run: Vec::new(),
             },
+            compose: None,
         }
     }
 
@@ -916,6 +1109,7 @@ mod tests {
         let args = build_run_args(&plan, "node:22").expect("args should build");
         let joined = args.join(" ");
         assert!(joined.contains("--network none"));
+        assert!(joined.contains("--entrypoint npm"));
         assert!(!joined.contains("relabel"));
     }
 
@@ -1057,15 +1251,9 @@ mod tests {
             "/c/Users/foo/project"
         );
         // Drive root only — must end with / so Docker treats it as absolute
-        assert_eq!(
-            path_to_docker_str(Path::new(r"C:\")),
-            "/c/"
-        );
+        assert_eq!(path_to_docker_str(Path::new(r"C:\")), "/c/");
         // Bare drive letter without separator
-        assert_eq!(
-            path_to_docker_str(Path::new("C:")),
-            "/c/"
-        );
+        assert_eq!(path_to_docker_str(Path::new("C:")), "/c/");
         // Extended-length prefix stripped
         assert_eq!(
             path_to_docker_str(Path::new(r"\\?\C:\foo\bar")),

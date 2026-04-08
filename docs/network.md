@@ -170,14 +170,47 @@ sbox run -- npm rebuild                    # runs postinstall, no network
 
 ---
 
+## Option 4 — IP-level Firewall (`network_policy: firewall`)
+
+**Strongest live isolation. Blocks hardcoded-IP exfiltration.**
+
+While `network_allow` (Option 2) blocks domain-based exfiltration, it cannot stop a script that hardcodes an IP address (like a C2 server or a cloud metadata endpoint). The **Firewall mode** closes this gap.
+
+```yaml
+profiles:
+  install:
+    mode: sandbox
+    network: on
+    network_policy: firewall
+    network_allow:
+      - "*.npmjs.org"
+```
+
+**How it works:**
+Instead of just DNS filtering, `sbox` installs **nftables** rules inside the container's network namespace at start time:
+1. **Drop all outbound traffic** by default.
+2. **Resolve allowed domains** on the host to their current IP addresses.
+3. **Allow egress only** to those specific resolved IPs (and only on ports 80/443).
+4. **Allow DNS** only to the trusted host resolver.
+
+**Constraints:**
+- **Linux only**: Requires `nftables` and `nsenter` on the host.
+- **Rootful mode**: Requires running `sbox` as root (via `sudo`) because rootless containers cannot modify their own network namespace firewall rules.
+- **Performance**: Adds a small startup delay to resolve IPs and install rules.
+
+**When to use:** high-security environments where even raw IP exfiltration is a threat, and you can afford to run with `sudo`.
+
+---
+
 ## Comparison
 
-| | `network: off` | `network_allow` | Two-phase |
-|--|----------------|-----------------|-----------|
-| Live downloads | No | Yes | Yes |
-| Blocks domain-based exfil | Yes | Yes | Yes (phase 2) |
-| Blocks hardcoded-IP exfil | Yes | No | Yes (phase 2) |
-| Complexity | Low | Low | Medium |
-| Works without cache | No | Yes | Yes |
+| | `network: off` | `network_allow` | Firewall | Two-phase |
+|--|----------------|-----------------|----------|-----------|
+| Live downloads | No | Yes | Yes | Yes |
+| Blocks domain exfil | Yes | Yes | Yes | Yes (phase 2) |
+| Blocks IP exfil | Yes | No | **Yes** | Yes (phase 2) |
+| Rootless ok | Yes | Yes | **No** | Yes |
+| Complexity | Low | Low | Medium | Medium |
+| Works without cache | No | Yes | Yes | Yes |
 
-For most teams: **start with `network_allow`** pointing at your registry. If you need stronger guarantees, move to two-phase. If you have a cache, use `network: off`.
+For most teams: **start with `network_allow`** pointing at your registry. If you need absolute IP-level isolation and can run as root, use **Firewall mode**.

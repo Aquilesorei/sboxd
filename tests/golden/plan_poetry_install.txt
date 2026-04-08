@@ -38,6 +38,7 @@ workspace:
 
 policy:
   network: on
+  network_policy: dns
   network_allow: <none>
   writable: true
   no_new_privileges: true
@@ -56,6 +57,7 @@ environment:
 
 mounts:
   - bind $ROOT -> /workspace (ro, workspace)
+  - mask /workspace/.env (credential masked)
 
 caches:
   - poetry-cache -> /var/tmp/sbox/poetry-cache (rw, source: <default>)

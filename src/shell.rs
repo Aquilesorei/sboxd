@@ -121,7 +121,9 @@ mod tests {
             strict_security: false,
             verbose: 0,
             quiet: false,
-            command: Commands::Shell(ShellCommand::default()),
+            output_format: crate::cli::OutputFormat::Text,
+            command: Some(Commands::Shell(ShellCommand::default())),
+            custom_command: Vec::new(),
         }
     }
 
@@ -141,12 +143,14 @@ mod tests {
                 pre_run: Vec::new(),
                 network_allow: Vec::new(),
                 ports: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: Some("/bin/bash".to_string()),
                 writable_paths: None,
+                compose: None,
             },
         );
 
@@ -164,6 +168,7 @@ mod tests {
             dispatch: IndexMap::new(),
 
             package_manager: None,
+            commands: IndexMap::new(),
         }
     }
 

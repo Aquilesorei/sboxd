@@ -1,7 +1,7 @@
 use clap::Parser;
 use sbox::cli::{
-    Cli, CliBackendKind, CliExecutionMode, Commands, DoctorCommand, ExecCommand, InitCommand,
-    PlanCommand, RunCommand, ShellCommand,
+    Cli, CliBackendKind, CliExecutionMode, Commands, DoctorCommand, ExecCommand, HardenCommand,
+    InitCommand, PlanCommand, RunCommand, ShellCommand,
 };
 use std::path::Path;
 
@@ -11,7 +11,7 @@ fn parse_run_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { command, .. }) => {
+        Some(Commands::Run(RunCommand { command, .. })) => {
             assert_eq!(command, vec!["npm", "install", "lodash"]);
         }
         other => panic!("expected run command, got {other:?}"),
@@ -24,7 +24,7 @@ fn parse_exec_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Exec(ExecCommand { profile, command }) => {
+        Some(Commands::Exec(ExecCommand { profile, command })) => {
             assert_eq!(profile, "install");
             assert_eq!(command, vec!["uv", "sync"]);
         }
@@ -38,7 +38,7 @@ fn parse_plan_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Plan(PlanCommand { command, .. }) => {
+        Some(Commands::Plan(PlanCommand { command, .. })) => {
             assert_eq!(command, vec!["cargo", "build"]);
         }
         other => panic!("expected plan command, got {other:?}"),
@@ -51,15 +51,17 @@ fn parse_init_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Init(InitCommand {
+        Some(Commands::Init(InitCommand {
             force,
             preset,
             output,
+            all,
             ..
-        }) => {
+        })) => {
             assert!(!force);
             assert!(preset.is_none());
             assert!(output.is_none());
+            assert!(!all);
         }
         other => panic!("expected init command, got {other:?}"),
     }
@@ -71,7 +73,7 @@ fn parse_init_with_preset() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Init(InitCommand { preset, .. }) => {
+        Some(Commands::Init(InitCommand { preset, .. })) => {
             assert_eq!(preset.as_deref(), Some("python"));
         }
         other => panic!("expected init command, got {other:?}"),
@@ -84,7 +86,7 @@ fn parse_init_with_force() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Init(InitCommand { force, .. }) => {
+        Some(Commands::Init(InitCommand { force, .. })) => {
             assert!(force);
         }
         other => panic!("expected init command, got {other:?}"),
@@ -97,9 +99,25 @@ fn parse_init_with_output() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Init(InitCommand { output, .. }) => {
+        Some(Commands::Init(InitCommand { output, .. })) => {
             let p: &Path = Path::new("custom/sbox.yaml");
             assert_eq!(output.as_deref(), Some(p));
+        }
+        other => panic!("expected init command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_init_interactive_all() {
+    let args = vec!["sbox", "init", "--interactive", "--all"];
+    let cli = Cli::parse_from(args);
+
+    match cli.command {
+        Some(Commands::Init(InitCommand {
+            interactive, all, ..
+        })) => {
+            assert!(interactive);
+            assert!(all);
         }
         other => panic!("expected init command, got {other:?}"),
     }
@@ -111,7 +129,7 @@ fn parse_shell_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Shell(ShellCommand { shell }) => {
+        Some(Commands::Shell(ShellCommand { shell })) => {
             assert!(shell.is_none());
         }
         other => panic!("expected shell command, got {other:?}"),
@@ -124,7 +142,7 @@ fn parse_shell_with_shell_override() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Shell(ShellCommand { shell }) => {
+        Some(Commands::Shell(ShellCommand { shell })) => {
             assert_eq!(shell.as_deref(), Some("/bin/zsh"));
         }
         other => panic!("expected shell command, got {other:?}"),
@@ -137,7 +155,7 @@ fn parse_doctor_command() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Doctor(DoctorCommand { strict }) => {
+        Some(Commands::Doctor(DoctorCommand { strict })) => {
             assert!(!strict);
         }
         other => panic!("expected doctor command, got {other:?}"),
@@ -150,10 +168,27 @@ fn parse_doctor_with_strict() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Doctor(DoctorCommand { strict }) => {
+        Some(Commands::Doctor(DoctorCommand { strict })) => {
             assert!(strict);
         }
         other => panic!("expected doctor command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_harden_command() {
+    let args = vec!["sbox", "harden", "--write", "--diff", "--run"];
+    let cli = Cli::parse_from(args);
+
+    match cli.command {
+        Some(Commands::Harden(HardenCommand {
+            write, diff, run, ..
+        })) => {
+            assert!(write);
+            assert!(diff);
+            assert!(run);
+        }
+        other => panic!("expected harden command, got {other:?}"),
     }
 }
 
@@ -293,7 +328,7 @@ fn command_after_double_dash_preserved() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { command, .. }) => {
+        Some(Commands::Run(RunCommand { command, .. })) => {
             assert_eq!(command, vec!["echo", "-n", "hello world"]);
         }
         other => panic!("expected run command, got {other:?}"),
@@ -306,7 +341,7 @@ fn command_with_hyphen_values() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { command, .. }) => {
+        Some(Commands::Run(RunCommand { command, .. })) => {
             assert_eq!(command, vec!["node", "--version"]);
         }
         other => panic!("expected run command, got {other:?}"),
@@ -319,9 +354,9 @@ fn run_dry_run_flag() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand {
+        Some(Commands::Run(RunCommand {
             dry_run, command, ..
-        }) => {
+        })) => {
             assert!(dry_run);
             assert_eq!(command, vec!["npm", "install"]);
         }
@@ -335,7 +370,7 @@ fn run_env_override_single() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { env, .. }) => {
+        Some(Commands::Run(RunCommand { env, .. })) => {
             assert_eq!(env, vec!["FOO=bar"]);
         }
         other => panic!("expected run command, got {other:?}"),
@@ -350,7 +385,7 @@ fn run_env_override_multiple() {
     let cli = Cli::parse_from(args);
 
     match cli.command {
-        Commands::Run(RunCommand { env, .. }) => {
+        Some(Commands::Run(RunCommand { env, .. })) => {
             assert_eq!(env, vec!["A=1", "B=2"]);
         }
         other => panic!("expected run command, got {other:?}"),

@@ -30,43 +30,221 @@ pub(crate) enum SignatureVerificationSupport {
     },
 }
 
-pub fn execute(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
-    if plan.policy.reuse_container {
-        return execute_via_reusable_session(plan, false);
-    }
-
-    validate_runtime_inputs(plan)?;
-    verify_image_signature(plan)?;
-    let image = resolve_container_image(plan)?;
-    let args = build_run_args(plan, &image)?;
-
-    let mut child = Command::new("podman");
-    child.args(&args);
-    child.current_dir(&plan.workspace.effective_host_dir);
-    child.stdin(Stdio::inherit());
-    child.stdout(Stdio::inherit());
-    child.stderr(Stdio::inherit());
-
-    let status = child
-        .status()
+fn inspect_container_pid(container_name: &str) -> Result<i32, SboxError> {
+    let output = Command::new("podman")
+        .args(["inspect", "-f", "{{.State.Pid}}", container_name])
+        .stdin(Stdio::null())
+        .output()
         .map_err(|source| SboxError::BackendUnavailable {
             backend: "podman".to_string(),
             source,
         })?;
 
-    Ok(status_to_exit_code(status))
+    if !output.status.success() {
+        return Err(SboxError::BackendCommandFailed {
+            backend: "podman".to_string(),
+            command: format!("podman inspect -f {{.State.Pid}} {container_name}"),
+            status: output.status.code().unwrap_or(1),
+        });
+    }
+
+    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let pid: i32 = pid_str.parse().map_err(|_| SboxError::FirewallPolicyUnavailable {
+        reason: "could not parse container PID for firewall enforcement".to_string(),
+    })?;
+    if pid <= 0 {
+        return Err(SboxError::FirewallPolicyUnavailable {
+            reason: "container PID unavailable for firewall enforcement".to_string(),
+        });
+    }
+    Ok(pid)
+}
+
+// ── Pending-output extraction ─────────────────────────────────────────────────
+//
+// When a writable_path entry points to a file that does not yet exist on the
+// host (e.g. uv.lock on a first run), we skip the bind-mount entirely so the
+// tool sees no existing file and creates it from scratch.  After the container
+// exits we extract the file with `podman cp`, which correctly handles user
+// namespace ownership.  This avoids the two failure modes of the old
+// temp-file staging approach:
+//   1. Tools (uv, cargo, npm) parsing an empty or stub file and crashing.
+//   2. Copy-back permission errors when the container user differs from the
+//      host user via rootless namespace mapping.
+
+struct PendingOutput {
+    /// Container-side path of the file to extract (e.g. "/workspace/uv.lock").
+    container_target: String,
+    /// Host path where the file should land after extraction.
+    final_path: PathBuf,
+}
+
+/// Split mounts into (mounts-to-pass-to-podman, pending-outputs-to-cp-after-run).
+///
+/// Returns minimal valid seed content for a known lockfile format so that the
+/// tool can parse-then-overwrite rather than failing on an empty file.
+/// `workspace_root` is used to read project metadata (e.g. `requires-python`
+/// from `pyproject.toml`) when available.
+pub(crate) fn lockfile_seed(path: &std::path::Path, workspace_root: &std::path::Path) -> Vec<u8> {
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some("uv.lock") => {
+            let requires_python = read_requires_python(workspace_root)
+                .unwrap_or_else(|| ">=3.8".to_string());
+            format!("version = 1\nrequires-python = \"{requires_python}\"\n").into_bytes()
+        }
+        Some("Cargo.lock") => b"version = 3\n".to_vec(),
+        Some("package-lock.json") => b"{\"lockfileVersion\":3}".to_vec(),
+        Some("composer.lock") => b"{}".to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// Scans `pyproject.toml` in `workspace_root` for a `requires-python` value.
+/// Uses a simple line search to avoid pulling in a full TOML parser.
+fn read_requires_python(workspace_root: &std::path::Path) -> Option<String> {
+    let content = fs::read_to_string(workspace_root.join("pyproject.toml")).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Skip comments and non-matching lines.
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("requires-python") {
+            let rest = rest.trim().strip_prefix('=')?.trim();
+            // Extract the quoted value, ignoring trailing inline comments.
+            // Handles: ">=3.13", '>=3.13', >=3.13
+            let value = if let Some(inner) = rest
+                .strip_prefix('"')
+                .and_then(|s| s.split('"').next())
+                .or_else(|| rest.strip_prefix('\'').and_then(|s| s.split('\'').next()))
+            {
+                inner.to_string()
+            } else {
+                // Unquoted — take up to the first whitespace or comment.
+                rest.split_whitespace().next()?.to_string()
+            };
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Pre-creates missing host-side output files (e.g. `uv.lock`) so they can be
+/// bind-mounted writably.  A file-level writable bind mount takes precedence over
+/// a read-only workspace bind mount, letting the container write through it
+/// directly.  Files are seeded with minimal valid content so tools that read
+/// before writing don't fail parsing an empty file.
+/// Directory mounts are always passed through — creating an empty directory is safe.
+fn partition_pending_outputs(
+    mounts: &[ResolvedMount],
+    workspace_root: &std::path::Path,
+) -> (Vec<ResolvedMount>, Vec<PendingOutput>) {
+    let mut effective: Vec<ResolvedMount> = Vec::with_capacity(mounts.len());
+    let mut pending: Vec<PendingOutput> = Vec::new();
+
+    for mount in mounts {
+        // Pre-create missing host-side output files before the pending check.
+        // A file-level writable bind mount takes precedence over a read-only
+        // workspace bind mount, so the container can write through it directly.
+        if mount.kind == "bind" && mount.create && !mount.read_only {
+            if let Some(source) = mount.source.as_ref() {
+                if source.extension().is_some() && !source.exists() {
+                    if let Some(parent) = source.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(source, lockfile_seed(source, workspace_root));
+                }
+            }
+        }
+
+        let is_pending = mount.kind == "bind"
+            && mount.create
+            && mount.source.as_ref().is_some_and(|s| {
+                s.extension().is_some() && !s.exists()
+            });
+
+        if is_pending {
+            let final_path = mount.source.as_ref().unwrap().clone();
+            pending.push(PendingOutput {
+                container_target: mount.target.clone(),
+                final_path,
+            });
+            // Intentionally not added to `effective` — no bind-mount for this file.
+        } else {
+            effective.push(mount.clone());
+        }
+    }
+
+    (effective, pending)
+}
+
+/// Extract pending output files from an exited (but not yet removed) container
+/// using `podman cp`.  Silently skips files the tool did not produce (e.g.
+/// because the command failed before writing anything).
+fn copy_pending_outputs(container_name: &str, pending: &[PendingOutput]) -> Result<(), SboxError> {
+    for p in pending {
+        let src = format!("{}:{}", container_name, p.container_target);
+        let status = Command::new("podman")
+            .args(["cp", &src, &p.final_path.display().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|source| SboxError::BackendUnavailable {
+                backend: "podman".to_string(),
+                source,
+            })?;
+        // Non-zero exit means the file wasn't in the container (tool didn't create it).
+        // Don't surface this as an sbox error — the tool's own exit code is what matters.
+        let _ = status;
+    }
+    Ok(())
+}
+
+pub fn execute(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
+    if plan.policy.reuse_container {
+        return execute_via_reusable_session(plan, false);
+    }
+    run_sandboxed(plan, false)
 }
 
 pub fn execute_interactive(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> {
     if plan.policy.reuse_container {
         return execute_via_reusable_session(plan, true);
     }
+    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    run_sandboxed(plan, tty)
+}
 
-    validate_runtime_inputs(plan)?;
+fn run_sandboxed(plan: &ExecutionPlan, tty: bool) -> Result<ExitCode, SboxError> {
+    let (effective_mounts, pending_outputs) = partition_pending_outputs(&plan.mounts, &plan.workspace.root);
+
+    validate_runtime_inputs_with_mounts(&effective_mounts, &plan.secrets, &plan.workspace.root)?;
     verify_image_signature(plan)?;
     let image = resolve_container_image(plan)?;
-    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let args = build_run_args_with_options(plan, &image, tty)?;
+
+    // When there are pending outputs we name the container so we can run
+    // `podman cp` after it exits. In firewall mode we also need a container name
+    // so we can inspect its PID and apply nftables rules in its network namespace.
+    let needs_name_for_firewall = plan.policy.network_policy == crate::config::model::NetworkPolicy::Firewall
+        && plan.policy.network != "off"
+        && !plan.policy.network_allow.is_empty();
+    let container_name = if pending_outputs.is_empty() && !needs_name_for_firewall {
+        None
+    } else {
+        Some(format!("sbox-{}", std::process::id()))
+    };
+
+    let args = build_run_args_impl(
+        plan,
+        &effective_mounts,
+        &image,
+        tty,
+        &plan.command,
+        container_name.as_deref(),
+    )?;
 
     let mut child = Command::new("podman");
     child.args(&args);
@@ -75,12 +253,40 @@ pub fn execute_interactive(plan: &ExecutionPlan) -> Result<ExitCode, SboxError> 
     child.stdout(Stdio::inherit());
     child.stderr(Stdio::inherit());
 
-    let status = child
-        .status()
+    let mut child = child
+        .spawn()
         .map_err(|source| SboxError::BackendUnavailable {
             backend: "podman".to_string(),
             source,
         })?;
+
+    if needs_name_for_firewall {
+        let name = container_name.as_deref().expect("named when firewall requested");
+        let pid = inspect_container_pid(name)?;
+        crate::firewall::apply_firewall_in_netns(
+            pid,
+            &crate::firewall::FirewallSpec {
+                allow_ips: plan.policy.network_allow.iter().map(|(_, ip)| ip.clone()).collect(),
+            },
+        )?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|source| SboxError::BackendUnavailable {
+            backend: "podman".to_string(),
+            source,
+        })?;
+
+    if let Some(name) = &container_name {
+        copy_pending_outputs(name, &pending_outputs)?;
+        let _ = Command::new("podman")
+            .args(["rm", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 
     Ok(status_to_exit_code(status))
 }
@@ -303,7 +509,28 @@ pub fn build_run_args_with_options(
     image: &str,
     tty: bool,
 ) -> Result<Vec<String>, SboxError> {
-    let mut args = vec!["run".to_string(), "--rm".to_string(), "-i".to_string()];
+    build_run_args_impl(plan, &plan.mounts, image, tty, &plan.command, None)
+}
+
+fn build_run_args_impl(
+    plan: &ExecutionPlan,
+    mounts: &[ResolvedMount],
+    image: &str,
+    tty: bool,
+    command: &[String],
+    container_name: Option<&str>,
+) -> Result<Vec<String>, SboxError> {
+    let mut args = vec!["run".to_string()];
+    match container_name {
+        Some(name) => {
+            args.push("--name".to_string());
+            args.push(name.to_string());
+        }
+        None => {
+            args.push("--rm".to_string());
+        }
+    }
+    args.push("-i".to_string());
 
     if tty {
         args.push("-t".to_string());
@@ -345,7 +572,7 @@ pub fn build_run_args_with_options(
 
     for port in &plan.policy.ports {
         args.push("--publish".to_string());
-        args.push(port.clone());
+        args.push(normalize_port_spec(port));
     }
 
     match &plan.user {
@@ -364,7 +591,7 @@ pub fn build_run_args_with_options(
         ResolvedUser::Default => {}
     }
 
-    for mount in &plan.mounts {
+    for mount in mounts {
         append_mount_args(&mut args, mount)?;
     }
 
@@ -410,8 +637,14 @@ pub fn build_run_args_with_options(
         args.push(pull_policy.clone());
     }
 
-    args.push(image.to_string());
-    args.extend(plan.command.iter().cloned());
+    if let Some((program, rest)) = command.split_first() {
+        args.push("--entrypoint".to_string());
+        args.push(program.clone());
+        args.push(image.to_string());
+        args.extend(rest.iter().cloned());
+    } else {
+        args.push(image.to_string());
+    }
 
     Ok(args)
 }
@@ -500,10 +733,11 @@ fn ensure_reusable_container(
         session_name.to_string(),
         "--workdir".to_string(),
         plan.workspace.sandbox_cwd.clone(),
+        "--entrypoint".to_string(),
+        "sleep".to_string(),
     ];
     append_container_settings(&mut create_args, plan)?;
     create_args.push(image.to_string());
-    create_args.push("sleep".to_string());
     create_args.push("infinity".to_string());
 
     let create_status = Command::new("podman")
@@ -602,9 +836,11 @@ fn append_container_settings(
         }
     }
 
-    // Domain allow-listing: break default DNS, inject resolved IPs as /etc/hosts entries.
+    // Domain allow-listing (DNS mode only): break default DNS, inject resolved IPs as /etc/hosts entries.
     // RFC 5737 192.0.2.1 is TEST-NET-1, guaranteed non-routable — DNS queries will time out.
-    if !plan.policy.network_allow.is_empty() {
+    if plan.policy.network_policy != crate::config::model::NetworkPolicy::Firewall
+        && !plan.policy.network_allow.is_empty()
+    {
         args.push("--dns".to_string());
         args.push("192.0.2.1".to_string());
         for (hostname, ip) in &plan.policy.network_allow {
@@ -626,7 +862,10 @@ fn append_container_settings(
 
     for port in &plan.policy.ports {
         args.push("--publish".to_string());
-        args.push(port.clone());
+        // Rootless Podman (pasta) only binds IPv4 by default.  If the user wrote
+        // "8000:8000" without a host IP, prepend 127.0.0.1 so that the published
+        // port is reachable even when `localhost` resolves to ::1.
+        args.push(normalize_port_spec(port));
     }
 
     match &plan.user {
@@ -724,12 +963,20 @@ fn inspect_container_state(session_name: &str) -> Result<ContainerState, SboxErr
 }
 
 fn validate_runtime_inputs(plan: &ExecutionPlan) -> Result<(), SboxError> {
-    for mount in &plan.mounts {
+    validate_runtime_inputs_with_mounts(&plan.mounts, &plan.secrets, &plan.workspace.root)
+}
+
+fn validate_runtime_inputs_with_mounts(
+    mounts: &[ResolvedMount],
+    secrets: &[ResolvedSecret],
+    workspace_root: &Path,
+) -> Result<(), SboxError> {
+    for mount in mounts {
         validate_mount_source(mount)?;
     }
 
-    for secret in &plan.secrets {
-        validate_secret_source(secret, &plan.workspace.root)?;
+    for secret in secrets {
+        validate_secret_source(secret, workspace_root)?;
     }
 
     Ok(())
@@ -870,6 +1117,22 @@ fn bool_string(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+/// Normalises a port spec so it always has an explicit host IP.
+/// `"8000:8000"` → `"127.0.0.1:8000:8000"` so that rootless Podman (pasta)
+/// binds IPv4 only and `localhost` resolves correctly even on systems where
+/// it resolves to `::1` before `127.0.0.1`.
+/// Already-qualified specs (`"0.0.0.0:8000:8000"`, `"[::]:8000:8000"`) are
+/// returned unchanged.
+pub(crate) fn normalize_port_spec(spec: &str) -> String {
+    // Count colons: "host:container" has 1, "ip:host:container" has 2+.
+    // IPv6 addresses (e.g. [::1]:8000:8000) always start with '['.
+    let colon_count = spec.chars().filter(|&c| c == ':').count();
+    if colon_count >= 2 || spec.starts_with('[') {
+        return spec.to_string();
+    }
+    format!("127.0.0.1:{spec}")
+}
+
 fn ensure_built_image(
     recipe_path: &Path,
     tag: &str,
@@ -888,10 +1151,34 @@ fn ensure_built_image(
         })?;
 
     if exists_status.success() {
-        return Ok(());
-    }
+        if let Ok(metadata) = fs::metadata(workspace_root.join(recipe_path)) {
+            if let Ok(modified) = metadata.modified() {
+                let inspect_out = Command::new("podman")
+                    .args(["image", "inspect", tag, "--format", "{{.Created}}"])
+                    .output();
 
-    if exists_status.code() != Some(1) {
+                if let Ok(out) = inspect_out {
+                    let created_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if let Ok(created_dt) = chrono::DateTime::parse_from_rfc3339(&created_str) {
+                        if modified > created_dt.into() {
+                            println!("Dockerfile `{}` is newer than image `{}`. Rebuilding...", recipe_path.display(), tag);
+                        } else {
+                            return Ok(());
+                        }
+                    } else {
+                        // Fallback: if we can't parse date, assume it's fine to avoid constant rebuilds
+                        return Ok(());
+                    }
+                } else {
+                    return Ok(());
+                }
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    } else if exists_status.code() != Some(1) {
         return Err(SboxError::BackendCommandFailed {
             backend: "podman".to_string(),
             command: format!("podman image exists {tag}"),
@@ -1011,6 +1298,7 @@ mod tests {
                 pull_policy: None,
                 network_allow: Vec::new(),
                 network_allow_patterns: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
             },
             environment: ResolvedEnvironment {
                 variables: vec![ResolvedEnvVar {
@@ -1040,6 +1328,7 @@ mod tests {
                 target: "/run/secrets/token".into(),
             }],
             user: ResolvedUser::KeepId,
+            rootless: true,
             audit: crate::resolve::ExecutionAudit {
                 install_style: false,
                 trusted_image_required: false,
@@ -1052,6 +1341,7 @@ mod tests {
                 },
                 pre_run: Vec::new(),
             },
+            compose: None,
         }
     }
 
@@ -1064,11 +1354,12 @@ mod tests {
         assert!(joined.contains("run --rm -i"));
         assert!(joined.contains("--workdir /workspace"));
         assert!(joined.contains("--network none"));
-        assert!(joined.contains("--publish 3000:3000"));
+        assert!(joined.contains("--publish 127.0.0.1:3000:3000"));
         assert!(joined.contains("--userns keep-id"));
+        assert!(joined.contains("--entrypoint python"));
         assert!(joined.contains("--cap-drop all"));
         assert!(joined.contains("--env APP_ENV=development"));
-        assert!(joined.contains("python:3.13-slim python app.py"));
+        assert!(joined.contains("python:3.13-slim app.py"));
     }
 
     #[test]

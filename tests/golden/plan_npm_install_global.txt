@@ -40,7 +40,8 @@ workspace:
 
 policy:
   network: on
-  network_allow: [resolved] registry.npmjs.org, registry.yarnpkg.com
+  network_policy: dns
+  network_allow: <none>
   writable: true
   no_new_privileges: true
   read_only_rootfs: false
@@ -59,6 +60,7 @@ environment:
 mounts:
   - bind $ROOT -> /workspace (ro, workspace)
   - bind $ROOT/node_modules -> /workspace/node_modules (rw, workspace)
+  - mask /workspace/.env (credential masked)
 
 caches:
   - npm-cache -> /var/tmp/sbox/npm-cache (rw, source: <default>)
