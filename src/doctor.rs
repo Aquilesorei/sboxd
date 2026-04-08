@@ -37,7 +37,10 @@ pub fn execute(cli: &Cli, command: &DoctorCommand) -> Result<ExitCode, crate::er
     }
     checks.extend(shim_health_checks());
 
-    print_report(&checks);
+    match cli.output_format {
+        crate::cli::OutputFormat::Json => print_report_json(&checks),
+        crate::cli::OutputFormat::Text => print_report(&checks),
+    }
     Ok(determine_exit_code(&checks, command.strict))
 }
 
@@ -48,17 +51,17 @@ enum Backend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckLevel {
+pub(crate) enum CheckLevel {
     Pass,
     Warn,
     Fail,
 }
 
 #[derive(Debug, Clone)]
-struct CheckResult {
-    name: &'static str,
-    level: CheckLevel,
-    detail: String,
+pub(crate) struct CheckResult {
+    pub name: &'static str,
+    pub level: CheckLevel,
+    pub detail: String,
 }
 
 impl CheckResult {
@@ -143,7 +146,8 @@ fn run_podman_checks(
             if configured_rootless == Some(false) {
                 checks.push(CheckResult::warn(
                     "rootless-config",
-                    "config sets `runtime.rootless: false` but Podman is running in rootless mode"
+                    "config sets `runtime.rootless: false` but Podman is running in rootless mode.\n  \
+                     Fix: set `runtime.rootless: true` or remove the key to suppress this warning."
                         .to_string(),
                 ));
             }
@@ -238,9 +242,7 @@ fn run_docker_checks(loaded: Option<&crate::config::LoadedConfig>, checks: &mut 
     }
 }
 
-fn root_command_dispatch_warnings(
-    config: &crate::config::model::Config,
-) -> Vec<CheckResult> {
+fn root_command_dispatch_warnings(config: &crate::config::model::Config) -> Vec<CheckResult> {
     // Commands that typically require running as root inside the container.
     const ROOT_COMMANDS: &[&str] = &[
         "apt-get", "apt ", "apk ", "yum ", "dnf ", "pacman ", "zypper ",
@@ -287,10 +289,12 @@ fn shim_health_checks() -> Vec<CheckResult> {
     // Resolve the default shim dir the same way `sbox shim` does.
     let shim_dir = match crate::platform::home_dir() {
         Some(home) => home.join(".local").join("bin"),
-        None => return vec![CheckResult::warn(
-            "shims",
-            "cannot determine home directory — skipping shim check".to_string(),
-        )],
+        None => {
+            return vec![CheckResult::warn(
+                "shims",
+                "cannot determine home directory — skipping shim check".to_string(),
+            )];
+        }
     };
 
     if !shim_dir.exists() {
@@ -443,6 +447,33 @@ fn print_report(checks: &[CheckResult]) {
             check.detail
         );
     }
+}
+
+fn print_report_json(checks: &[CheckResult]) {
+    let items: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "level": match c.level {
+                    CheckLevel::Pass => "pass",
+                    CheckLevel::Warn => "warn",
+                    CheckLevel::Fail => "fail",
+                },
+                "detail": c.detail,
+            })
+        })
+        .collect();
+
+    let out = serde_json::json!({
+        "checks": items,
+        "summary": {
+            "pass": checks.iter().filter(|c| c.level == CheckLevel::Pass).count(),
+            "warn": checks.iter().filter(|c| c.level == CheckLevel::Warn).count(),
+            "fail": checks.iter().filter(|c| c.level == CheckLevel::Fail).count(),
+        }
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
 }
 
 fn risky_config_warnings(config: &crate::config::model::Config) -> Vec<CheckResult> {
@@ -641,7 +672,8 @@ fn credential_exposure_warnings(loaded: &crate::config::LoadedConfig) -> Vec<Che
     vec![CheckResult::warn(
         "credential-exposure",
         format!(
-            "credential files found in workspace not covered by exclude_paths: {}",
+            "credential files found in workspace not covered by exclude_paths: {}\n  \
+             Fix: add these to `workspace.exclude_paths` in sbox.yaml to mask them from containers.",
             unmasked.join(", ")
         ),
     )]
@@ -756,7 +788,6 @@ fn looks_like_sensitive_mount(source: &Path) -> bool {
     false
 }
 
-
 fn level_label(level: CheckLevel) -> &'static str {
     match level {
         CheckLevel::Pass => "PASS",
@@ -868,6 +899,7 @@ mod tests {
             dispatch: Default::default(),
 
             package_manager: None,
+            commands: Default::default(),
         };
 
         let warnings = risky_config_warnings(&config);
@@ -900,6 +932,7 @@ mod tests {
             dispatch: Default::default(),
 
             package_manager: None,
+            commands: Default::default(),
         };
 
         let warnings = risky_config_warnings(&config);
@@ -925,7 +958,8 @@ mod tests {
                 role: None,
                 lockfile_files: Vec::new(),
                 pre_run: Vec::new(),
-                network_allow: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
+                network_allow: vec!["registry.npmjs.org".to_string()],
                 ports: Vec::new(),
                 capabilities: None,
                 no_new_privileges: Some(true),
@@ -934,6 +968,7 @@ mod tests {
                 shell: None,
 
                 writable_paths: None,
+                compose: None,
             },
         );
         let config = Config {
@@ -954,6 +989,7 @@ mod tests {
             dispatch: Default::default(),
 
             package_manager: None,
+            commands: Default::default(),
         };
 
         let warnings = risky_config_warnings(&config);
@@ -996,6 +1032,7 @@ mod tests {
                 dispatch: Default::default(),
 
                 package_manager: None,
+                commands: Default::default(),
             },
         };
 
@@ -1068,6 +1105,7 @@ mod tests {
                 dispatch: Default::default(),
 
                 package_manager: None,
+                commands: Default::default(),
             },
         }
     }
@@ -1147,6 +1185,7 @@ mod tests {
             profiles: Default::default(),
             dispatch,
             package_manager: None,
+            commands: Default::default(),
         }
     }
 
@@ -1155,7 +1194,9 @@ mod tests {
         let config = make_config_with_dispatch(vec!["apt-get install *"]);
         let warnings = root_command_dispatch_warnings(&config);
         assert!(
-            warnings.iter().any(|w| w.name == "root-commands" && w.level == CheckLevel::Warn),
+            warnings
+                .iter()
+                .any(|w| w.name == "root-commands" && w.level == CheckLevel::Warn),
             "expected root-commands warning for apt-get pattern"
         );
         assert!(warnings[0].detail.contains("apt-get install *"));

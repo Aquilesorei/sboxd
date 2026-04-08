@@ -77,7 +77,7 @@ pub fn load_config(options: &LoadOptions) -> Result<LoadedConfig, SboxError> {
     })
 }
 
-fn absolutize_path(path: Option<&Path>, base: &Path) -> Option<PathBuf> {
+pub fn absolutize_path(path: Option<&Path>, base: &Path) -> Option<PathBuf> {
     path.map(|path| absolutize_from(path, base))
 }
 

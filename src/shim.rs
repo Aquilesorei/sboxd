@@ -135,7 +135,10 @@ pub fn verify_shims(shim_dir: &Path) -> (usize, usize) {
         let shim_file = shim_file_path(shim_dir, name);
 
         if !shim_file.exists() {
-            println!("missing  {name:<12}  shim not found at {}", shim_file.display());
+            println!(
+                "missing  {name:<12}  shim not found at {}",
+                shim_file.display()
+            );
             problems += 1;
             continue;
         }
@@ -186,7 +189,9 @@ pub fn verify_shims(shim_dir: &Path) -> (usize, usize) {
                 problems += 1;
             }
             (Some(_), None) => {
-                println!("ok       {name:<12}  shim active (no real binary found elsewhere in PATH)");
+                println!(
+                    "ok       {name:<12}  shim active (no real binary found elsewhere in PATH)"
+                );
                 ok += 1;
             }
         }
@@ -366,7 +371,6 @@ fn render_shim_cmd(name: &str, real_binary: Option<&Path>) -> String {
     )
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::render_shim;
@@ -408,15 +412,20 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn cmd_shim_structure() {
-        let script =
-            render_shim("npm", Some(std::path::Path::new(r"C:\Program Files\nodejs\npm.cmd")));
+        let script = render_shim(
+            "npm",
+            Some(std::path::Path::new(r"C:\Program Files\nodejs\npm.cmd")),
+        );
 
         // Must be a batch file
         assert!(script.contains("@echo off"), "must suppress echo");
 
         // Must check for sbox.yaml and delegate
         assert!(script.contains("sbox.yaml"), "must check for sbox.yaml");
-        assert!(script.contains("sbox run -- npm %*"), "must delegate to sbox run");
+        assert!(
+            script.contains("sbox run -- npm %*"),
+            "must delegate to sbox run"
+        );
 
         // Walk-up logic: parent dir extraction and loop label
         assert!(

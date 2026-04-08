@@ -38,7 +38,8 @@ workspace:
 
 policy:
   network: on
-  network_allow: [resolved] registry.npmjs.org
+  network_policy: dns
+  network_allow: <none>
   writable: false
   no_new_privileges: true
   read_only_rootfs: false

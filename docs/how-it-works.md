@@ -48,6 +48,8 @@ workspace:
     - node_modules   # npm can write here, nowhere else
 ```
 
+If a `writable_paths` entry points to a file such as `package-lock.json`, `uv.lock`, or `Cargo.lock`, sbox opens the parent directory for writes rather than mounting only that file. That preserves normal lockfile update semantics while the rest of the workspace stays read-only.
+
 If a postinstall script tries to write a backdoor to `.git/hooks/pre-commit`, it gets `EACCES`. If it tries to modify `package.json`, it gets `EROFS`.
 
 ---

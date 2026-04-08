@@ -5,8 +5,8 @@ use crate::cli::{Cli, CliBackendKind, CliExecutionMode};
 use crate::config::{
     BackendKind, ImageConfig, LoadedConfig,
     model::{
-        CacheConfig, Config, EnvironmentConfig, ExecutionMode, MountType, ProfileConfig,
-        ProfileRole, SecretConfig,
+        CacheConfig, Config, EnvironmentConfig, ExecutionMode, MountType, NetworkPolicy,
+        ProfileConfig, ProfileRole, SecretConfig,
     },
 };
 use crate::dispatch;
@@ -29,7 +29,15 @@ pub struct ExecutionPlan {
     pub caches: Vec<ResolvedCache>,
     pub secrets: Vec<ResolvedSecret>,
     pub user: ResolvedUser,
+    pub rootless: bool,
     pub audit: ExecutionAudit,
+    pub compose: Option<ResolvedCompose>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedCompose {
+    pub file: PathBuf,
+    pub services: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +99,7 @@ pub enum CwdMapping {
 #[derive(Debug, Clone)]
 pub struct ResolvedPolicy {
     pub network: String,
+    pub network_policy: NetworkPolicy,
     pub writable: bool,
     pub ports: Vec<String>,
     pub no_new_privileges: bool,
@@ -167,12 +176,14 @@ pub enum ProfileSource {
     Dispatch { rule_name: String, pattern: String },
     DefaultProfile,
     ImplementationDefault,
+    Shadow,
 }
 
 #[derive(Debug, Clone)]
 pub enum ModeSource {
     CliOverride,
     Profile,
+    Default,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -241,6 +252,7 @@ pub fn resolve_execution_plan(
         .unwrap_or(true);
     let user = resolve_user(config, rootless);
     let install_style = is_install_style(&profile.role, &profile_resolution.name);
+    let compose = resolve_compose(config, profile, &loaded.workspace_root);
     let audit = ExecutionAudit {
         install_style,
         trusted_image_required: profile.require_pinned_image.unwrap_or(false)
@@ -275,7 +287,9 @@ pub fn resolve_execution_plan(
         caches,
         secrets,
         user,
+        rootless,
         audit,
+        compose,
     })
 }
 
@@ -584,6 +598,7 @@ fn resolve_policy(
 
     ResolvedPolicy {
         network: profile.network.clone().unwrap_or_else(|| "off".to_string()),
+        network_policy: profile.network_policy,
         writable: profile.writable.unwrap_or(true),
         ports: if matches!(mode, ExecutionMode::Sandbox) {
             profile.ports.clone()
@@ -1008,14 +1023,24 @@ fn resolve_mounts(
                 .map(|ws| ws.writable_paths.as_slice())
                 .unwrap_or(&[])
         });
-        for rel_path in writable_paths {
+        for rel_path in normalize_writable_mount_paths(writable_paths) {
+            let source = if rel_path == Path::new("") {
+                workspace_root.to_path_buf()
+            } else {
+                workspace_root.join(&rel_path)
+            };
+            let target = if rel_path == Path::new("") {
+                workspace_mount.to_string()
+            } else {
+                format!("{workspace_mount}/{}", rel_path.display())
+            };
             mounts.push(ResolvedMount {
                 kind: "bind".to_string(),
-                source: Some(workspace_root.join(rel_path)),
-                target: format!("{workspace_mount}/{rel_path}"),
+                source: Some(source),
+                target,
                 read_only: false,
                 is_workspace: true,
-                create: true,
+                create: rel_path != Path::new(""),
             });
         }
     }
@@ -1068,6 +1093,35 @@ fn resolve_mounts(
     }
 
     mounts
+}
+
+fn normalize_writable_mount_paths(paths: &[String]) -> Vec<PathBuf> {
+    // Preserve declaration order while de-duplicating.
+    let mut unique: Vec<PathBuf> = Vec::new();
+
+    for path in paths {
+        let original = Path::new(path);
+        let mount_path = if original.extension().is_some() {
+            // File path: mount its parent directory rw.
+            // For root-level files (e.g. uv.lock), mount the file itself to avoid making the
+            // whole workspace writable.
+            let parent = original.parent().unwrap_or_else(|| Path::new(""));
+            if parent == Path::new("") {
+                original
+            } else {
+                parent
+            }
+        } else {
+            original
+        };
+
+        let candidate = mount_path.to_path_buf();
+        if !unique.contains(&candidate) {
+            unique.push(candidate);
+        }
+    }
+
+    unique
 }
 
 fn resolve_caches(caches: &[CacheConfig]) -> Vec<ResolvedCache> {
@@ -1227,6 +1281,40 @@ fn classify_reference_trust(reference: &str, digest: Option<&str>) -> ImageTrust
 }
 
 /// Resolve lockfile audit from the profile's explicit `lockfile_files` list.
+fn resolve_compose(
+    config: &Config,
+    profile: &ProfileConfig,
+    workspace_root: &Path,
+) -> Option<ResolvedCompose> {
+    let compose = profile.compose.as_ref().or_else(|| {
+        config
+            .runtime
+            .as_ref()
+            .and_then(|rt| rt.compose.as_ref())
+    })?;
+
+    let file = compose.file.clone().unwrap_or_else(|| {
+        // Default candidates if no file specified
+        for name in &[
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+        ] {
+            let path = workspace_root.join(name);
+            if path.exists() {
+                return PathBuf::from(name);
+            }
+        }
+        PathBuf::from("docker-compose.yml")
+    });
+
+    Some(ResolvedCompose {
+        file: workspace_root.join(file),
+        services: compose.services.clone(),
+    })
+}
+
 fn resolve_lockfile_audit(
     lockfile_files: &[String],
     install_style: bool,
@@ -1299,11 +1387,13 @@ mod tests {
             strict_security: false,
             verbose: 0,
             quiet: false,
-            command: Commands::Plan(PlanCommand {
+            output_format: crate::cli::OutputFormat::Text,
+            command: Some(Commands::Plan(PlanCommand {
                 show_command: false,
                 audit: false,
                 command: vec!["npm".into(), "install".into()],
-            }),
+            })),
+            custom_command: Vec::new(),
         }
     }
 
@@ -1330,6 +1420,8 @@ mod tests {
                 shell: None,
 
                 writable_paths: None,
+                network_policy: crate::config::model::NetworkPolicy::Dns,
+                compose: None,
             },
         );
         profiles.insert(
@@ -1353,6 +1445,8 @@ mod tests {
                 shell: None,
 
                 writable_paths: None,
+                network_policy: crate::config::model::NetworkPolicy::Dns,
+                compose: None,
             },
         );
 
@@ -1375,6 +1469,7 @@ mod tests {
                 pull_policy: None,
                 strict_security: None,
                 require_pinned_image: None,
+                compose: None,
             }),
             workspace: Some(WorkspaceConfig {
                 root: None,
@@ -1401,6 +1496,7 @@ mod tests {
             dispatch,
 
             package_manager: None,
+            commands: IndexMap::new(),
         }
     }
 
@@ -1484,6 +1580,54 @@ mod tests {
 
         assert!(workspace_mount.read_only);
         assert!(!plan.policy.writable);
+    }
+
+    #[test]
+    fn file_writable_paths_mount_parent_directories() {
+        let cli = base_cli();
+        let mut config = base_config();
+        config
+            .workspace
+            .as_mut()
+            .expect("workspace exists")
+            .writable = Some(false);
+        config
+            .workspace
+            .as_mut()
+            .expect("workspace exists")
+            .writable_paths = vec!["uv.lock".into(), "nested/Cargo.lock".into()];
+        config
+            .profiles
+            .get_mut("default")
+            .expect("default profile exists")
+            .writable = Some(false);
+
+        let plan = resolve_execution_plan(
+            &cli,
+            &loaded_config(config),
+            ResolutionTarget::Plan,
+            &["uv".into(), "sync".into()],
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(plan.mounts[0].target, "/workspace");
+        assert!(plan.mounts[0].read_only);
+
+        let uv_lock_mount = plan
+            .mounts
+            .iter()
+            .find(|mount| mount.target == "/workspace/uv.lock")
+            .expect("uv.lock mount should exist");
+        assert!(!uv_lock_mount.read_only);
+        assert!(uv_lock_mount.create);
+
+        let nested_mount = plan
+            .mounts
+            .iter()
+            .find(|mount| mount.target == "/workspace/nested")
+            .expect("nested parent mount should exist");
+        assert!(!nested_mount.read_only);
+        assert!(nested_mount.create);
     }
 
     #[test]
@@ -1695,6 +1839,8 @@ mod tests {
                 shell: None,
 
                 writable_paths: None,
+                network_policy: crate::config::model::NetworkPolicy::Dns,
+                compose: None,
             },
         );
         config.dispatch.insert(

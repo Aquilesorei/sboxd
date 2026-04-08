@@ -28,6 +28,9 @@ pub enum SboxError {
     #[error("unknown profile `{name}`")]
     UnknownProfile { name: String },
 
+    #[error("unknown command `{name}`")]
+    UnknownCommand { name: String },
+
     #[error("unknown preset `{name}`")]
     UnknownPreset { name: String },
 
@@ -36,6 +39,9 @@ pub enum SboxError {
 
     #[error("refusing unsafe sandbox execution for `{command}`: {reason}")]
     UnsafeExecutionPolicy { command: String, reason: String },
+
+    #[error("firewall network policy is unavailable: {reason}")]
+    FirewallPolicyUnavailable { reason: String },
 
     #[error("pre-run command `{pre_run}` failed before `{command}` with exit status `{status}`")]
     PreRunFailed {
@@ -62,6 +68,16 @@ pub enum SboxError {
 
     #[error("failed to write generated config {}: {source}", path.display())]
     InitWrite {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("refusing to overwrite existing generated hardening file {}", path.display())]
+    HardenOutputExists { path: PathBuf },
+
+    #[error("failed to write generated hardening file {}: {source}", path.display())]
+    HardenWrite {
         path: PathBuf,
         #[source]
         source: io::Error,
@@ -127,4 +143,23 @@ pub enum SboxError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    #[error("failed to write sandbox output `{}` back to workspace: {source}", path.display())]
+    OutputCopyFailed {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to detect infrastructure: {reason}")]
+    InfrastructureDetectionFailed { reason: String },
+
+    #[error("failed to generate shadow compose file: {source}")]
+    ShadowComposeGeneration {
+        #[source]
+        source: serde_yaml::Error,
+    },
+
+    #[error("shadow infrastructure command `{command}` failed with exit status `{status}`")]
+    ShadowStackFailed { command: String, status: i32 },
 }

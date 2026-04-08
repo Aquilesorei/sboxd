@@ -38,6 +38,10 @@ runtime:
   reuse_container: false    # keep container running between sbox invocations
   strict_security: false    # refuse execution if security policy is too loose
   require_pinned_image: false  # require image.digest globally
+  network_policy: dns           # dns | firewall (Linux rootful only)
+  compose:                      # sidecar services from Docker Compose
+    file: docker-compose.yml
+    services: [db, redis]
 ```
 
 | Field | Default | Description |
@@ -47,6 +51,8 @@ runtime:
 | `reuse_container` | `false` | Keep a named container running; use `podman exec` for subsequent invocations. |
 | `strict_security` | `false` | Refuse if sensitive env vars are passed through, lockfile missing, or image unpinned. |
 | `require_pinned_image` | `false` | Globally require `image.digest` to be set. |
+| `network_policy` | `dns` | `dns` (hostname filtering) or `firewall` (strict IP-level egress). |
+| `compose` | none | Sidecar services to start before execution. |
 
 ---
 
@@ -78,7 +84,7 @@ workspace:
 | `root` | Host path to mount. Relative paths are resolved from the config file location. |
 | `mount` | Container path where the workspace is mounted. |
 | `writable` | If `false`, the entire workspace is read-only except for `writable_paths`. |
-| `writable_paths` | List of workspace-relative paths that are mounted read-write even when `writable: false`. |
+| `writable_paths` | List of workspace-relative paths that are mounted read-write even when `writable: false`. File entries are supported; sbox makes the parent directory writable so lockfile rewrites still work. |
 | `exclude_paths` | Files matching these patterns are replaced with an empty `/dev/null` bind mount inside the container. Supports glob patterns (`*.key`) and directory globs (`.ssh/*`). |
 
 ---
@@ -88,6 +94,7 @@ workspace:
 ```yaml
 image:
   ref: node:22-bookworm-slim
+  build: Dockerfile             # build image from Dockerfile if missing or changed
   digest: sha256:abc123...          # optional: pin to exact digest
   verify_signature: false           # verify via skopeo + containers policy
   pull_policy: missing              # missing | always | never
@@ -96,6 +103,7 @@ image:
 | Field | Description |
 |-------|-------------|
 | `ref` | Image reference. Passed directly to the container runtime. |
+| `build` | Path to a `Dockerfile` (relative to workspace root). If the image is missing or the `Dockerfile` has a newer timestamp than the local image, `sbox` will rebuild it automatically. |
 | `digest` | If set, the image reference is rewritten to `ref@digest` before pulling. Enforced at resolve time. |
 | `verify_signature` | If `true`, runs `skopeo` against the system containers policy before execution. Requires a policy that actually enforces signatures. |
 | `pull_policy` | `missing` (default): pull only if not present locally. `always`: always pull. `never`: fail if not present. |
@@ -192,6 +200,7 @@ profiles:
   install:
     mode: sandbox             # sandbox | host
     network: off              # off | on
+    network_policy: dns       # dns | firewall (Linux rootful only)
     network_allow:            # hostname allowlist (only with network: on)
       - registry.npmjs.org
       - "*.npmjs.org"
@@ -200,6 +209,8 @@ profiles:
     read_only_rootfs: false   # make the container rootfs read-only
     role: install             # install | run | build — enables role-specific policy
     require_pinned_image: false
+    compose:                  # sidecar services to start for this profile
+      services: [db]
     lockfile_files:           # files that must exist for role: install in strict mode
       - package-lock.json
       - npm-shrinkwrap.json
@@ -220,6 +231,7 @@ profiles:
 |-------|---------|-------------|
 | `mode` | `sandbox` | `sandbox` runs in a container. `host` runs the command directly on the host (no sandboxing). |
 | `network` | `off` | `off` passes `--network none`. `on` uses the default container network. |
+| `network_policy` | `dns` | `dns` (hostname filtering) or `firewall` (strict IP-level egress). `firewall` requires Linux + rootful mode. |
 | `network_allow` | `[]` | Hostname allowlist. Requires `network: on`. See [network.md](network.md). |
 | `writable` | inherited | If `true`, the workspace is mounted read-write. If unset, inherits from `workspace.writable`. |
 | `no_new_privileges` | `true` | Passes `--security-opt no-new-privileges`. |
@@ -231,6 +243,37 @@ profiles:
 | `capabilities` | none | Linux capabilities. Accepts three forms: `"drop-all"` (string), `["CAP_NET_ADMIN"]` (list treated as cap_add), or `{ drop: [...], add: [...] }` (structured, preferred). |
 | `ports` | `[]` | Port mappings in `host:container` format. Only with `network: on`. |
 | `writable_paths` | inherited | When set, overrides `workspace.writable_paths` for this profile only. Use this to give different profiles different write access (e.g. install writes lockfile, build writes dist). |
+
+---
+
+## `commands`
+
+Custom command aliases for common development tasks. Defines a `sbox <alias>` command.
+
+```yaml
+commands:
+  build:
+    run: ["cargo", "build", "--release"]
+    profile: build
+    description: "Build the release binary"
+
+  test:
+    run: ["cargo", "test"]
+    profile: test
+    description: "Run the test suite"
+
+  dev:
+    run: ["npm", "run", "dev"]
+    # profile omitted: uses dispatch rules
+```
+
+| Field | Description |
+|-------|-------------|
+| `run` | The command and arguments to execute (array of strings). |
+| `profile` | (Optional) Profile to use. If omitted, standard dispatch rules apply. |
+| `description` | (Optional) A short text shown in `sbox help`. |
+
+When running a custom command (e.g., `sbox build --verbose`), extra arguments are automatically appended to the `run` list.
 
 ---
 

@@ -36,6 +36,10 @@ cargo install sboxd
 
 - [Config reference](config.md) — every `sbox.yaml` field explained
 
+### Output formats
+
+All commands support `--output-format text|json` as a global flag.
+
 ## Contributing
 
 - [Architecture](architecture.md) — how the code is structured, execution flow, how to add features

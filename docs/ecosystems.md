@@ -145,7 +145,7 @@ package_manager:
   name: uv   # or: pip | poetry
 ```
 
-Routes `uv sync` / `uv add` → network on, `pypi.org` only, `.venv` writable. Everything else → network off.
+Routes `uv sync` / `uv add` → network on, `pypi.org` only, `.venv` and `uv.lock` writable. Everything else → network off.
 
 ### With cache
 

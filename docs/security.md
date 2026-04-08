@@ -72,7 +72,7 @@ With `network: off`, the container has no network interface. DNS fails. TCP conn
 
 With `network_allow`, the container's DNS is pointed at a non-routable address so arbitrary lookups fail, while specific registry IPs are injected directly into `/etc/hosts`. The container can reach the registry but not arbitrary internet hosts.
 
-See [network.md](network.md) for the full explanation of how this works and where the gaps are.
+With `network_policy: firewall`, `sbox` goes beyond DNS filtering and installs kernel-level **nftables** rules inside the container's network namespace. This blocks even hardcoded IP addresses that bypass DNS entirely. See [network.md](network.md) for details.
 
 ### Read-only workspace
 
@@ -96,6 +96,19 @@ profiles:
 ```
 
 This sets `--security-opt no-new-privileges` on the container. The process inside cannot gain additional Linux capabilities via setuid binaries. Combined with rootless Podman, the container process is your UID on the host — never root.
+
+---
+
+## Shadow Mode Security (Zero-Config)
+
+When `sbox` runs in **Shadow Mode** (no `sbox.yaml`), it applies a "Hardened by Default" policy to your existing infrastructure:
+
+- **Rootfs is Read-Only**: Even if your `Dockerfile` or `compose.yml` doesn't specify it, `sbox` forces `read_only: true` on the container.
+- **Privilege Escalation Blocked**: Adds `no-new-privileges: true` to all services.
+- **Capabilities Dropped**: Drops all Linux capabilities (`cap_drop: [ALL]`) unless you explicitly override them.
+- **Workspace Isolation**: The host workspace is mounted **read-only** by default, protecting your source code even if the base image is untrusted.
+
+This ensures that even if you haven't written a security policy yet, `sbox` provides immediate protection using its best-practice defaults.
 
 ---
 

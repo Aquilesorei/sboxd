@@ -109,7 +109,11 @@ fn preset_python_generates_yaml_that_loads_and_resolves() {
         verbose: 0,
         quiet: false,
         strict_security: false,
-        command: sbox::cli::Commands::Doctor(sbox::cli::DoctorCommand::default()),
+        output_format: sbox::cli::OutputFormat::Text,
+        command: Some(sbox::cli::Commands::Doctor(
+            sbox::cli::DoctorCommand::default(),
+        )),
+        custom_command: Vec::new(),
     };
 
     // install-style command should resolve via the package_manager preset
@@ -155,7 +159,11 @@ fn preset_node_generates_yaml_that_loads_and_resolves() {
         verbose: 0,
         quiet: false,
         strict_security: false,
-        command: sbox::cli::Commands::Doctor(sbox::cli::DoctorCommand::default()),
+        output_format: sbox::cli::OutputFormat::Text,
+        command: Some(sbox::cli::Commands::Doctor(
+            sbox::cli::DoctorCommand::default(),
+        )),
+        custom_command: Vec::new(),
     };
 
     let plan = resolve_execution_plan(

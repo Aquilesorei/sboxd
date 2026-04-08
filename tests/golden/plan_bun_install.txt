@@ -39,6 +39,7 @@ workspace:
 
 policy:
   network: on
+  network_policy: dns
   network_allow: <none>
   writable: true
   no_new_privileges: true
@@ -57,6 +58,7 @@ environment:
 mounts:
   - bind $ROOT -> /workspace (ro, workspace)
   - bind $ROOT/node_modules -> /workspace/node_modules (rw, workspace)
+  - mask /workspace/.env (credential masked)
 
 caches:
   - bun-cache -> /var/tmp/sbox/bun-cache (rw, source: <default>)

@@ -382,6 +382,7 @@ mod tests {
                 pre_run: Vec::new(),
                 network_allow: Vec::new(),
                 ports: Vec::new(),
+                network_policy: crate::config::model::NetworkPolicy::Dns,
                 capabilities: None,
                 no_new_privileges: Some(true),
                 read_only_rootfs: None,
@@ -389,6 +390,7 @@ mod tests {
                 shell: None,
 
                 writable_paths: None,
+                compose: None,
             },
         );
         let config = Config {
@@ -401,6 +403,7 @@ mod tests {
                 pull_policy: None,
                 strict_security: None,
                 require_pinned_image: None,
+                compose: None,
             }),
             workspace: None,
             identity: None,
@@ -413,6 +416,7 @@ mod tests {
             dispatch: IndexMap::new(),
 
             package_manager: None,
+            commands: IndexMap::new(),
         };
 
         let names = reusable_session_names(&config, Path::new("/tmp/workspace"));

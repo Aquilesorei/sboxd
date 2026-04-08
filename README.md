@@ -20,7 +20,7 @@ The March 31 2026 Axios npm supply chain attack (Sapphire Sleet RAT delivered vi
 
 v1 and v2 are both complete. Current implemented scope:
 
-- `init`, `run`, `exec`, `shell`, `plan`, `doctor`, `clean`, and `shim`
+- `init`, `run`, `exec`, `shell`, `plan`, `doctor`, `clean`, `status`, `logs`, `audit`, `bootstrap`, `explain`, `shim` (shortcuts: `i`, `r`, `e`, `sh`, `p`, `d`, `c`, `s`, `l`, `a`, `b`, `ex`)
 - Podman and Docker backends for sandbox execution
 - Reusable Podman/Docker sessions when enabled
 - Security validation: dangerous mounts, sensitive env pass-through, lockfile checks
@@ -29,7 +29,13 @@ v1 and v2 are both complete. Current implemented scope:
 - Image digest pinning and real signature verification via `skopeo` + containers policy
 - Package-manager-agnostic policy: `role`, `pre_run`, `lockfile_files` on profiles
 - Outbound network domain allow-listing with glob/regex pattern support
-- Backend auto-detection when `runtime.backend` is not set
+- **IP-level Firewall mode** for strict egress enforcement (Linux rootful only)
+- **Docker Compose integration** for managing sidecar dependencies (databases, etc.)
+- **Smart mtime-based rebuilds** for `image.build` when Dockerfile changes
+- **Built-in shortcuts**: Many commands have single-letter aliases (e.g., `sbox r` for `sbox run`, `sbox p` for `sbox plan`)
+- **Custom command aliases** via `commands:` in `sbox.yaml` (e.g., `sbox build`, `sbox test`)
+- **Shadow Infrastructure (Zero-config)**: Run `sbox` in projects with only a Dockerfile or Compose file; no `sbox.yaml` required
+- **Backend auto-detection** and manual override via `--backend` or `SBOX_BACKEND`
 - Transparent shim interception for `npm`, `pnpm`, `yarn`, `bun`, `uv`, `pip`, `poetry`, `cargo`, and more
 
 ## Installation
@@ -87,10 +93,11 @@ cargo install --path .
 
 ## Documentation
 
-Start with **[How it works](docs/how-it-works.md)** — it explains bind mounts, what the sandbox actually isolates, and why the network situation is complicated. Everything else makes more sense after that.
+Start with the **[Comprehensive Usage Guide](docs/usage.md)** — it covers every command, configuration option, and security policy in one place.
 
+For specific topics, see:
 - [How it works](docs/how-it-works.md) — the mental model
-- [Getting started](docs/getting-started.md) — install and first run
+- [Getting started](docs/getting-started.md) — quick install and first run
 - [Progressive adoption](docs/adoption.md) — add sbox to an existing project one step at a time
 - [Ecosystem guides](docs/ecosystems.md) — Node.js, Python, Rust, Go
 - [Network security](docs/network.md) — `network: off`, `network_allow`, two-phase installs
@@ -103,23 +110,51 @@ Start with **[How it works](docs/how-it-works.md)** — it explains bind mounts,
 
 ## Quick Start
 
-Generate a config from a preset (recommended):
+### Zero-Config (Shadow Mode)
+
+If your project has a `Dockerfile` or `docker-compose.yml`, just run it:
+
+```bash
+sbox run -- npm install
+sbox run --service app -- npm run build
+```
+
+### Explicit Config
+
+Initialize `sbox` in your project. By default, it scans the repo first and adapts to what is already there: lockfiles and manifests, `Dockerfile` or `Containerfile`, and Compose files.
+
+```bash
+sbox init
+```
+
+If the project already clearly implies an ecosystem or backend, `sbox init` uses that instead of asking.
+
+Or force a specific preset (skips auto-detection):
 
 ```bash
 sbox init --preset node      # npm  — node:22-bookworm-slim
-sbox init --preset python    # uv   — python:3.13-slim
+sbox init --preset python    # pip/uv — python:3.13-slim
 sbox init --preset rust      # cargo — rust:1-bookworm
 sbox init --preset go        # go   — golang:1.23-bookworm
 sbox init --preset generic   # blank — ubuntu:24.04
 ```
 
-Or use the interactive wizard (arrow-key menus):
+Or use the interactive wizard:
 
 ```bash
 sbox init --interactive
-# → "simple" path: picks PM + image, writes package_manager: config
-# → "advanced" path: full manual profiles and dispatch rules
+sbox init --interactive --all
 ```
+
+- `sbox init --interactive`
+  - scans first
+  - skips irrelevant prompts when the repo already makes the choice obvious
+  - offers `skip` where a value is optional
+  - can prompt for `commands:` aliases before writing the file
+- `sbox init --interactive --all`
+  - prompts from scratch
+  - does not auto-apply detected defaults
+  - useful when you want to configure everything manually
 
 Inspect the resolved policy before running anything:
 
@@ -376,6 +411,8 @@ package_manager:
 ```
 
 sbox infers the rest: install profile (network on, registry only, lockfile writable), build profile (network off, dist writable), and a locked-down default for everything else. No profiles or dispatch rules to write.
+
+When a `writable_paths` entry names a file such as `uv.lock` or `Cargo.lock`, sbox mounts the file's parent directory read-write so package managers can use normal delete/rename/create lockfile workflows inside an otherwise read-only workspace.
 
 For full control, use explicit profiles:
 

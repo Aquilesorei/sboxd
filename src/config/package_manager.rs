@@ -1,6 +1,6 @@
 use crate::config::model::{
-    Config, DispatchRule, EnvironmentConfig, ExecutionMode, ImageConfig, ProfileConfig,
-    ProfileRole, WorkspaceConfig,
+    Config, DispatchRule, EnvironmentConfig, ExecutionMode, ImageConfig, NetworkPolicy,
+    ProfileConfig, ProfileRole, WorkspaceConfig,
 };
 use crate::error::SboxError;
 
@@ -77,6 +77,15 @@ static PRESETS: &[(&str, Preset)] = &[
             lockfile_files: &["pnpm-lock.yaml"],
             publish_token_envs: &["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_AUTH_TOKEN"],
             credential_files: &[".npmrc"],
+            // node:22-bookworm-slim ships npm and yarn but NOT pnpm. The node image's
+            // docker-entrypoint.sh converts any command not found in PATH into
+            // `node <command>`, so `pnpm install` silently becomes `node pnpm install`
+            // and fails with a confusing "Cannot find module" error.
+            //
+            // Until sbox gains container-side init support, users must supply their own
+            // image with pnpm already installed, e.g.:
+            //   FROM node:22-bookworm-slim
+            //   RUN corepack enable pnpm
             default_image: "node:22-bookworm-slim",
             default_env: &[],
         },
@@ -101,7 +110,7 @@ static PRESETS: &[(&str, Preset)] = &[
         Preset {
             install_patterns: &["uv sync*", "uv add*", "uv pip install*"],
             build_patterns: &["uv build*", "uv run build*"],
-            install_writable: &[".venv"],
+            install_writable: &[".venv", "uv.lock"],
             build_writable: &["dist"],
             network_allow: &["pypi.org", "files.pythonhosted.org"],
             lockfile_files: &["uv.lock"],
@@ -111,7 +120,16 @@ static PRESETS: &[(&str, Preset)] = &[
             // Prevent uv from downloading a managed Python interpreter inside the sandbox;
             // the image already ships Python. Without this uv tries github.com which is not
             // in the network_allow list and fails with a confusing DNS error.
-            default_env: &[("UV_PYTHON_DOWNLOADS", "never")],
+            //
+            // With rootless keep-id, Podman maps the host UID into the container but there
+            // is no matching /etc/passwd entry, so HOME falls back to the working directory
+            // (/workspace). uv then resolves its cache as /workspace/.cache/uv, which fails
+            // because the workspace is mounted read-only. /tmp is mode 1777 (world-writable)
+            // and works regardless of which UID runs inside the container.
+            default_env: &[
+                ("UV_PYTHON_DOWNLOADS", "never"),
+                ("UV_CACHE_DIR", "/tmp/uv-cache"),
+            ],
         },
     ),
     (
@@ -126,7 +144,11 @@ static PRESETS: &[(&str, Preset)] = &[
             publish_token_envs: &["TWINE_PASSWORD", "TWINE_USERNAME", "PYPI_TOKEN"],
             credential_files: &[".pypirc"],
             default_image: "python:3.13-slim",
-            default_env: &[],
+            // Same HOME=/ issue as poetry (see below): pip's cache dir resolves to
+            // /.cache/pip which is not writable for the host UID with keep-id.
+            // pip degrades gracefully (disables cache with a warning) so this is not a
+            // hard crash, but it slows every install significantly.
+            default_env: &[("PIP_CACHE_DIR", "/tmp/pip-cache")],
         },
     ),
     (
@@ -141,7 +163,18 @@ static PRESETS: &[(&str, Preset)] = &[
             publish_token_envs: &["POETRY_PYPI_TOKEN_PYPI", "TWINE_PASSWORD", "PYPI_TOKEN"],
             credential_files: &[".pypirc"],
             default_image: "python:3.13-slim",
-            default_env: &[],
+            // With rootless keep-id, python:3.13-slim runs as the host UID with HOME=/.
+            // Poetry's default cache dir (~/.cache/pypoetry) resolves to /.cache/pypoetry,
+            // which can't be created because / is owned by root. /tmp is 1777 and always
+            // writable regardless of which UID runs.
+            //
+            // POETRY_VIRTUALENVS_IN_PROJECT puts the venv at .venv in the workspace so it
+            // lands in install_writable and persists across runs instead of being recreated
+            // from scratch on every container start.
+            default_env: &[
+                ("POETRY_CACHE_DIR", "/tmp/poetry-cache"),
+                ("POETRY_VIRTUALENVS_IN_PROJECT", "true"),
+            ],
         },
     ),
     (
@@ -150,7 +183,8 @@ static PRESETS: &[(&str, Preset)] = &[
             // fetch/generate-lockfile acquire deps from the network; build/check/test are offline
             install_patterns: &["cargo fetch*", "cargo generate-lockfile*"],
             build_patterns: &["cargo build*", "cargo check*", "cargo test*"],
-            install_writable: &["target"],
+            // cargo fetch and cargo generate-lockfile write to Cargo.lock.
+            install_writable: &["target", "Cargo.lock"],
             build_writable: &["target"],
             network_allow: &["crates.io", "static.crates.io", "index.crates.io"],
             lockfile_files: &["Cargo.lock"],
@@ -173,7 +207,10 @@ static PRESETS: &[(&str, Preset)] = &[
                 "go build ./...",
                 "go build*",
             ],
-            install_writable: &["vendor"],
+            // go mod tidy and go get both write to go.mod and go.sum in the workspace root.
+            // Without these, both commands fail with "read-only file system" when workspace
+            // is mounted ro. go.sum is analogous to package-lock.json in the npm preset.
+            install_writable: &["vendor", "go.mod", "go.sum"],
             build_writable: &["dist", "bin", "."],
             network_allow: &["proxy.golang.org", "sum.golang.org"],
             lockfile_files: &["go.sum"],
@@ -189,7 +226,8 @@ static PRESETS: &[(&str, Preset)] = &[
         Preset {
             install_patterns: &["composer install*", "composer update*", "composer require*"],
             build_patterns: &[],
-            install_writable: &["vendor"],
+            // composer install/update/require all modify composer.lock.
+            install_writable: &["vendor", "composer.lock"],
             build_writable: &[],
             network_allow: &["repo.packagist.org", "packagist.org"],
             lockfile_files: &["composer.lock"],
@@ -199,6 +237,10 @@ static PRESETS: &[(&str, Preset)] = &[
             default_env: &[
                 // Disable interactive prompts inside the container.
                 ("COMPOSER_NO_INTERACTION", "1"),
+                // The composer:2 image runs as root. Without this flag, Composer 2.2+
+                // disables all plugins when running as root, which silently breaks installs
+                // for projects that rely on plugins (e.g. Symfony Flex).
+                ("COMPOSER_ALLOW_SUPERUSER", "1"),
             ],
         },
     ),
@@ -207,7 +249,8 @@ static PRESETS: &[(&str, Preset)] = &[
         Preset {
             install_patterns: &["bundle install*", "bundle update*", "bundle add*"],
             build_patterns: &["bundle exec rake*", "bundle exec rspec*"],
-            install_writable: &["vendor/bundle", ".bundle"],
+            // bundle install/update modify Gemfile.lock.
+            install_writable: &["vendor/bundle", ".bundle", "Gemfile.lock"],
             build_writable: &["tmp", "log"],
             network_allow: &["rubygems.org", "index.rubygems.org"],
             lockfile_files: &["Gemfile.lock"],
@@ -268,12 +311,14 @@ fn make_install_profile(
         pre_run,
         ports: Vec::new(),
         network_allow,
+        network_policy: NetworkPolicy::Dns,
         capabilities: None,
         no_new_privileges: Some(true),
         read_only_rootfs: None,
         reuse_container: None,
         shell: None,
         writable_paths: Some(writable_paths),
+        compose: None,
     }
 }
 
@@ -301,6 +346,7 @@ fn make_build_profile(
         lockfile_files: Vec::new(),
         pre_run: Vec::new(),
         ports: Vec::new(),
+        network_policy: NetworkPolicy::Dns,
         network_allow: Vec::new(),
         capabilities: None,
         no_new_privileges: Some(true),
@@ -308,6 +354,7 @@ fn make_build_profile(
         reuse_container: None,
         shell: None,
         writable_paths: Some(writable_paths),
+        compose: None,
     }
 }
 
@@ -323,6 +370,7 @@ fn make_default_profile() -> ProfileConfig {
         lockfile_files: Vec::new(),
         pre_run: Vec::new(),
         ports: Vec::new(),
+        network_policy: NetworkPolicy::Dns,
         network_allow: Vec::new(),
         capabilities: None,
         no_new_privileges: Some(true),
@@ -330,11 +378,35 @@ fn make_default_profile() -> ProfileConfig {
         reuse_container: None,
         shell: None,
         writable_paths: Some(vec![]),
+        compose: None,
     }
 }
 
-/// Elaborates `package_manager:` into synthetic profiles and dispatch rules.
-/// Called after deserialization, before validation.
+fn make_host_profile() -> ProfileConfig {
+    ProfileConfig {
+        mode: ExecutionMode::Host,
+        image: None,
+        network: Some("on".to_string()),
+        writable: Some(true),
+        require_pinned_image: None,
+        require_lockfile: None,
+        role: Some(ProfileRole::Run),
+        lockfile_files: Vec::new(),
+        pre_run: Vec::new(),
+        ports: Vec::new(),
+        network_policy: NetworkPolicy::Dns,
+        network_allow: Vec::new(),
+        capabilities: None,
+        no_new_privileges: Some(true),
+        read_only_rootfs: None,
+        reuse_container: None,
+        shell: None,
+        writable_paths: None,
+        compose: None,
+    }
+}
+
+// ... (rest of the code remains the same)
 /// User-defined profiles and dispatch rules always take precedence.
 ///
 /// Also fills in `image:` and `workspace:` defaults when the user omits them,
@@ -362,6 +434,7 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
             container_name: None,
             pull_policy: None,
             require_pinned_image: None,
+            compose: None,
         });
     }
 
@@ -427,6 +500,12 @@ pub fn elaborate(config: &mut Config) -> Result<(), SboxError> {
         config
             .profiles
             .insert("default".to_string(), make_default_profile());
+    }
+
+    if !config.profiles.contains_key("host") {
+        config
+            .profiles
+            .insert("host".to_string(), make_host_profile());
     }
 
     // Prepend dispatch rules so user-defined rules take precedence (IndexMap preserves order).
@@ -533,6 +612,7 @@ mod tests {
                 network_allow: None,
                 pre_run: None,
             }),
+            commands: indexmap::IndexMap::new(),
         }
     }
 
@@ -595,12 +675,14 @@ mod tests {
                 pre_run: vec![],
                 ports: vec![],
                 network_allow: vec![],
+                network_policy: crate::config::model::NetworkPolicy::Dns,
                 capabilities: None,
                 no_new_privileges: None,
                 read_only_rootfs: None,
                 reuse_container: None,
                 shell: None,
                 writable_paths: None,
+                compose: None,
             },
         );
         elaborate(&mut config).unwrap();
@@ -752,17 +834,21 @@ mod tests {
 
         let profile = config.profiles.get("pm-composer-install").unwrap();
         assert_eq!(profile.network.as_deref(), Some("on"));
-        assert!(profile
-            .writable_paths
-            .as_deref()
-            .unwrap()
-            .contains(&"vendor".to_string()));
-        assert!(config
-            .environment
-            .as_ref()
-            .unwrap()
-            .deny
-            .contains(&"COMPOSER_AUTH".to_string()));
+        assert!(
+            profile
+                .writable_paths
+                .as_deref()
+                .unwrap()
+                .contains(&"vendor".to_string())
+        );
+        assert!(
+            config
+                .environment
+                .as_ref()
+                .unwrap()
+                .deny
+                .contains(&"COMPOSER_AUTH".to_string())
+        );
     }
 
     #[test]
@@ -772,18 +858,22 @@ mod tests {
 
         let profile = config.profiles.get("pm-bundler-install").unwrap();
         assert_eq!(profile.network.as_deref(), Some("on"));
-        assert!(profile
-            .writable_paths
-            .as_deref()
-            .unwrap()
-            .iter()
-            .any(|p| p.contains("vendor/bundle")));
-        assert!(config
-            .environment
-            .as_ref()
-            .unwrap()
-            .deny
-            .contains(&"GEM_HOST_API_KEY".to_string()));
+        assert!(
+            profile
+                .writable_paths
+                .as_deref()
+                .unwrap()
+                .iter()
+                .any(|p| p.contains("vendor/bundle"))
+        );
+        assert!(
+            config
+                .environment
+                .as_ref()
+                .unwrap()
+                .deny
+                .contains(&"GEM_HOST_API_KEY".to_string())
+        );
     }
 
     #[test]
@@ -792,6 +882,20 @@ mod tests {
         elaborate(&mut config).unwrap();
 
         let set = &config.environment.as_ref().unwrap().set;
-        assert_eq!(set.get("BUNDLE_PATH").map(String::as_str), Some("vendor/bundle"));
+        assert_eq!(
+            set.get("BUNDLE_PATH").map(String::as_str),
+            Some("vendor/bundle")
+        );
+    }
+
+    #[test]
+    fn test_package_manager_elaborate_injects_host_profile() {
+        let mut config = base_config_with_pm("pip");
+        elaborate(&mut config).unwrap();
+
+        let host = config.profiles.get("host").expect("host profile should exist");
+        assert!(matches!(host.mode, ExecutionMode::Host));
+        assert_eq!(host.network.as_deref(), Some("on"));
+        assert_eq!(host.writable, Some(true));
     }
 }
