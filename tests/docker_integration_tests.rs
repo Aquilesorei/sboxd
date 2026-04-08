@@ -22,6 +22,12 @@ fn docker_test_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn acquire_docker_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    docker_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -53,9 +59,7 @@ fn docker_run_preserves_workspace_cwd_and_env() {
     if !require_docker_tests() {
         return;
     }
-    let _guard = docker_test_lock()
-        .lock()
-        .expect("docker integration lock should not be poisoned");
+    let _guard = acquire_docker_test_lock();
 
     let root = repo_root();
     let temp = TempDir::new().expect("temp dir should be created");
@@ -108,9 +112,7 @@ fn docker_network_off_blocks_outbound_connections() {
     if !require_docker_tests() {
         return;
     }
-    let _guard = docker_test_lock()
-        .lock()
-        .expect("docker integration lock should not be poisoned");
+    let _guard = acquire_docker_test_lock();
 
     let root = repo_root();
     let temp = TempDir::new().expect("temp dir should be created");
@@ -145,9 +147,7 @@ fn docker_cloud_metadata_endpoint_blocked_with_network_on() {
     if !require_docker_tests() {
         return;
     }
-    let _guard = docker_test_lock()
-        .lock()
-        .expect("docker integration lock should not be poisoned");
+    let _guard = acquire_docker_test_lock();
 
     let root = repo_root();
     let temp = TempDir::new().expect("temp dir should be created");
@@ -158,8 +158,9 @@ fn docker_cloud_metadata_endpoint_blocked_with_network_on() {
     );
     let config_path = write_temp_config(&temp, &config);
 
-    // Try to connect to the AWS/GCP metadata endpoint by hostname.
-    // --add-host sinkholed it to 192.0.2.1 (RFC 5737 TEST-NET, non-routable).
+    // Try to connect to the metadata endpoint by hostname.
+    // Docker sinkholes metadata hostnames with --add-host, but cannot intercept
+    // a raw hard-coded IP connect() without stronger firewalling.
     let output = run_sbox(
         &root,
         &[
@@ -171,7 +172,7 @@ fn docker_cloud_metadata_endpoint_blocked_with_network_on() {
             "--",
             "python",
             "-c",
-            "import socket; socket.create_connection(('169.254.169.254', 80), 1)",
+            "import socket; socket.create_connection(('metadata.google.internal', 80), 1)",
         ],
     );
     assert!(
@@ -185,9 +186,7 @@ fn docker_network_allow_blocks_unlisted_hosts_via_dns_break() {
     if !require_docker_tests() {
         return;
     }
-    let _guard = docker_test_lock()
-        .lock()
-        .expect("docker integration lock should not be poisoned");
+    let _guard = acquire_docker_test_lock();
 
     let root = repo_root();
     let temp = TempDir::new().expect("temp dir should be created");
@@ -226,9 +225,7 @@ fn docker_denied_env_vars_not_visible_in_container() {
     if !require_docker_tests() {
         return;
     }
-    let _guard = docker_test_lock()
-        .lock()
-        .expect("docker integration lock should not be poisoned");
+    let _guard = acquire_docker_test_lock();
 
     let root = repo_root();
     let temp = TempDir::new().expect("temp dir should be created");
