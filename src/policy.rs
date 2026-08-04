@@ -12,12 +12,13 @@ pub struct CommandPolicy {
 }
 
 impl CommandPolicy {
-    pub fn resolve(cmd: &str, args: &[String]) -> Result<Self> {
+    pub fn resolve(cmd: &str, args: &[String], offline: bool) -> Result<Self> {
         let binary_path = which::which(cmd)
             .map_err(|_| SboxError::BinaryNotFound(cmd.to_string()))?;
 
         let program_name = cmd.to_string();
-        let network_enabled = Self::detect_network_policy(cmd, args);
+        // Network is ON by default so dev tools never break; offline flag cuts it off
+        let network_enabled = !offline;
         
         let mut writable_paths = vec![
             env::current_dir()?,
@@ -42,25 +43,6 @@ impl CommandPolicy {
             writable_paths,
         })
     }
-
-    fn detect_network_policy(cmd: &str, args: &[String]) -> bool {
-        let full_cmd_line = format!("{} {}", cmd, args.join(" "));
-        let lower = full_cmd_line.to_lowercase();
-
-        // Install / Sync commands require network access
-        if lower.contains("install") 
-            || lower.contains("sync") 
-            || lower.contains("add") 
-            || lower.contains("fetch") 
-            || lower.contains("update") 
-            || lower.contains("get") 
-        {
-            return true;
-        }
-
-        // By default for builds, tests, scripts, and runs: network is OFF
-        false
-    }
 }
 
 #[cfg(test)]
@@ -68,16 +50,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_network_policy_install() {
-        assert!(CommandPolicy::detect_network_policy("npm", &["install".to_string()]));
-        assert!(CommandPolicy::detect_network_policy("uv", &["sync".to_string()]));
-        assert!(CommandPolicy::detect_network_policy("cargo", &["add".to_string(), "serde".to_string()]));
+    fn test_policy_resolve_network_by_default() {
+        let policy = CommandPolicy::resolve("echo", &["test".to_string()], false).unwrap();
+        assert!(policy.network_enabled);
     }
 
     #[test]
-    fn test_detect_network_policy_build_and_test() {
-        assert!(!CommandPolicy::detect_network_policy("cargo", &["build".to_string()]));
-        assert!(!CommandPolicy::detect_network_policy("npm", &["test".to_string()]));
-        assert!(!CommandPolicy::detect_network_policy("python", &["main.py".to_string()]));
+    fn test_policy_resolve_offline_flag() {
+        let policy = CommandPolicy::resolve("echo", &["test".to_string()], true).unwrap();
+        assert!(!policy.network_enabled);
     }
 }

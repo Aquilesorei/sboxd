@@ -9,6 +9,10 @@ use clap::{Parser, Subcommand};
     allow_external_subcommands = true
 )]
 pub struct Cli {
+    /// Cut off all network access (offline mode)
+    #[arg(short = 'n', long = "offline", global = true)]
+    pub offline: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -17,6 +21,9 @@ pub struct Cli {
 pub enum Commands {
     /// Explicitly run a command in the native sandbox
     Run {
+        /// Cut off network access for this run
+        #[arg(short = 'n', long = "offline")]
+        offline: bool,
         /// The command to execute
         command: String,
         /// Arguments for the command
@@ -28,7 +35,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: ShimAction,
     },
-    /// Catch external subcommands (e.g. `sbox npm install` -> `npm` with args `["install"]`)
+    /// Catch external subcommands (e.g. `sbox npm install`)
     #[command(external_subcommand)]
     External(Vec<String>),
 }

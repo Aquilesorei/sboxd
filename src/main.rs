@@ -18,9 +18,14 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
+    let global_offline = cli.offline;
 
     match cli.command {
-        Some(Commands::Run { command, args }) => execute_cmd(&command, &args),
+        Some(Commands::Run {
+            offline,
+            command,
+            args,
+        }) => execute_cmd(&command, &args, offline || global_offline),
         Some(Commands::Shim { action }) => match action {
             ShimAction::Install => {
                 shim::install()?;
@@ -38,7 +43,7 @@ fn run() -> Result<ExitCode> {
             }
             let cmd = &args[0];
             let cmd_args = &args[1..];
-            execute_cmd(cmd, cmd_args)
+            execute_cmd(cmd, cmd_args, global_offline)
         }
         None => {
             use clap::CommandFactory;
@@ -50,13 +55,17 @@ fn run() -> Result<ExitCode> {
     }
 }
 
-fn execute_cmd(cmd: &str, args: &[String]) -> Result<ExitCode> {
-    let policy = CommandPolicy::resolve(cmd, args)?;
-    
+fn execute_cmd(cmd: &str, args: &[String], offline: bool) -> Result<ExitCode> {
+    let policy = CommandPolicy::resolve(cmd, args, offline)?;
+
     println!(
         "[sbox] Running '{}' (network: {})",
         policy.program_name,
-        if policy.network_enabled { "ON" } else { "OFF (unshared)" }
+        if policy.network_enabled {
+            "ON"
+        } else {
+            "OFF (unshared)"
+        }
     );
 
     let status = NativeSandbox::execute(&policy)?;
