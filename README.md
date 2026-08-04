@@ -1,55 +1,60 @@
 # sbox
 
-**`sbox`** is a zero-config, ultra-fast (<2ms) native security sandbox for Linux developers.
+> **Zero-config, instant (< 2ms) native Linux security sandbox for development commands.**
 
-It protects your system from **malicious postinstall scripts and supply chain attacks** during `npm install`, `cargo build`, `uv sync`, `pip install`, and other package execution workflows—without needing Docker, Podman, or configuration files.
-
----
-
-## 🔒 Threat Model: Supply Chain Attacks
-
-When you clone an open-source repo and run `npm install` or `cargo build`, package lifecycle scripts (`postinstall`, `build.rs`, `setup.py`) execute arbitrary code on your machine. Malicious packages attempt to:
-
-- Read `~/.ssh/id_rsa`, `~/.aws/credentials`, `~/.netrc`, or `.env` files.
-- Exfiltrate secrets (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `NPM_TOKEN`) over outbound network sockets.
-- Modify host binary locations or shell startup files (`~/.bashrc`).
-
-`sbox` wraps these commands in a **Linux Kernel Sandbox** that blocks secret theft, locks down filesystem access, and unshares outbound network access.
+`sbox` protects your host machine from **malicious postinstall scripts and supply chain attacks** during `npm install`, `cargo build`, `uv sync`, `pip install`, and other package manager executions—without Docker, Podman, or configuration files.
 
 ---
 
-## 🚀 Key Features
+## ⚡ Why sbox?
 
-- **Zero Config**: John installs `sbox` and runs `sbox npm install` or `sbox cargo build` in any project directory. No `sbox.yaml` file needed.
-- **Zero Latency (< 2ms)**: Uses your host machine's existing toolchain (`npm`, `cargo`, `python`, `uv`) directly—no container daemons or image pulls.
-- **Landlock LSM Filesystem Lockdown**: Read-only system access (`/usr`, `/lib`, `/etc`) and CWD read/write. `~/.ssh`, `~/.aws`, `.env`, and secret files are hard-blocked.
-- **Network Isolation**: Automatically unshares network namespaces (`CLONE_NEWNET`) for builds and tests, allowing network only for package install/sync steps.
-- **Environment Scrubbing**: Automatically strips AWS keys, GitHub tokens, and secret environment variables before process execution.
-- **Transparent Shell Shims**: Intercept `npm`, `cargo`, `uv`, etc., transparently via `sbox shim install`.
+| Feature | Raw Command (`npm install`) | Heavy Containers (Docker/Podman) | **`sbox` (Linux Native)** |
+|---|---|---|---|
+| **Security** | ❌ Full Host Access | ✅ Isolated Container | ✅ **Kernel Landlock + NetNS** |
+| **Setup Needed** | None | ❌ Install Docker/Podman, pull OCI images | ✅ **Zero Setup (Single Binary)** |
+| **Configuration** | None | ❌ Requires 50-line YAML configs | ✅ **Zero Config Needed** |
+| **Tool Version** | Host version | Container image version | ✅ **Host Machine Version** |
+| **Startup Speed** | < 1ms | ❌ ~300ms – 2,000ms | ⚡ **< 2 milliseconds** |
 
 ---
 
-## 📦 Usage
+## 🛡️ Threat Model: Supply Chain Attacks
 
-### Direct Execution
+When you clone an open-source project and run `npm install` or `cargo build`, lifecycle scripts (`postinstall`, `build.rs`, `setup.py`) execute arbitrary code on your computer. Malicious packages attempt to:
+
+- Read `~/.ssh/id_rsa`, `~/.aws/credentials`, or `.env` files.
+- Exfiltrate tokens (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `NPM_TOKEN`) over remote network sockets.
+- Modify system binaries or shell RC files (`~/.bashrc`).
+
+`sbox` runs these commands inside a **Linux Kernel Sandbox** that blocks secret theft, locks down filesystem access, and unshares network access.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Direct Command Execution
+Run any command cleanly through `sbox` in any directory:
+
 ```bash
-# Sandboxed package installation (Network: ON, Filesystem: Locked, Env: Scrubbed)
+# Sandboxed package installation (Network: ON, Filesystem: Restricted, Env: Scrubbed)
 sbox npm install
 sbox uv sync
 sbox cargo add serde
 
-# Sandboxed builds & tests (Network: OFF, Filesystem: Locked, Env: Scrubbed)
+# Sandboxed builds & tests (Network: OFF, Filesystem: Restricted, Env: Scrubbed)
 sbox cargo build --release
 sbox npm test
 sbox python main.py
 ```
 
-### Transparent Shims
+### 2. Transparent Shell Shims
+Intercept your dev tools transparently so you never forget to sandbox:
+
 ```bash
-# Install transparent shims
+# Install shims into ~/.local/share/sbox/shims
 sbox shim install
 
-# Add shims to your PATH in ~/.bashrc or ~/.zshrc:
+# Add shims to your ~/.bashrc or ~/.zshrc:
 export PATH="$HOME/.local/share/sbox/shims:$PATH"
 
 # Verify active shims
@@ -58,15 +63,15 @@ sbox shim verify
 
 ---
 
-## 🏗️ Architecture
+## 🔬 How It Works (Kernel Primitives)
 
-`sbox` uses native Linux kernel security primitives:
+`sbox` uses unprivileged Linux kernel security features:
 
-1. **Landlock LSM**: Restricted filesystem ruleset created and applied via `restrict_self()`.
-2. **Network Namespaces**: `libc::unshare(CLONE_NEWUSER | CLONE_NEWNET)` called in `pre_exec` hook.
-3. **Environment Scrubbing**: Sensitive key removal prior to `execve()`.
+1. **Landlock LSM**: Restricts filesystem access. Grants Read-Only rights to system paths (`/usr`, `/lib`, `/etc`) and toolchain paths (`~/.cargo`, `~/.rustup`, `~/.nvm`, etc.), Read/Write to the project workspace and `/tmp`, while hard-blocking access to sensitive files (`~/.ssh`, `~/.aws`, `.env`).
+2. **Network Namespaces (`CLONE_NEWNET`)**: Unshares outbound network access for builds and scripts so malicious postinstall payloads cannot exfiltrate data over HTTP/DNS.
+3. **Environment Scrubbing**: Automatically strips AWS keys, GitHub tokens, and secret environment variables prior to process execution.
 
-See [`docs/zero-config-native-sandbox.md`](file:///home/aquiles/RustroverProjects/sbox/docs/zero-config-native-sandbox.md) for full architectural documentation.
+For detailed architecture docs, see [`docs/how-it-works.md`](file:///home/aquiles/RustroverProjects/sbox/docs/how-it-works.md) and [`docs/security.md`](file:///home/aquiles/RustroverProjects/sbox/docs/security.md).
 
 ---
 
