@@ -13,6 +13,14 @@ pub struct Cli {
     #[arg(short = 'n', long = "offline", global = true)]
     pub offline: bool,
 
+    /// Allow access to sensitive environment variables and .env files
+    #[arg(short = 'e', long = "allow-env", global = true)]
+    pub allow_env: bool,
+
+    /// Allow outbound network connections (egress)
+    #[arg(short = 'o', long = "allow-net-out", global = true)]
+    pub allow_net_out: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -24,17 +32,28 @@ pub enum Commands {
         /// Cut off network access for this run
         #[arg(short = 'n', long = "offline")]
         offline: bool,
+        /// Allow access to sensitive environment variables and .env files
+        #[arg(short = 'e', long = "allow-env")]
+        allow_env: bool,
+        /// Allow outbound network connections (egress)
+        #[arg(short = 'o', long = "allow-net-out")]
+        allow_net_out: bool,
         /// The command to execute
         command: String,
         /// Arguments for the command
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Manage transparent shell shims
+    
+    /// Snapshots the current project dependencies to prevent runtime tampering
+    Lock,
+
+    #[command(hide = true)]
     Shim {
         #[command(subcommand)]
         action: ShimAction,
     },
+    
     /// Catch external subcommands (e.g. `sbox npm install`)
     #[command(external_subcommand)]
     External(Vec<String>),

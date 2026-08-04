@@ -20,6 +20,9 @@ pub enum SboxError {
 
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
+
+    #[error("Lock error: {0}")]
+    LockError(String),
 }
 
 pub type Result<T> = std::result::Result<T, SboxError>;

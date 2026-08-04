@@ -1,7 +1,7 @@
 use crate::error::{Result, SboxError};
 use crate::policy::CommandPolicy;
 use landlock::{
-    Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+    ABI, Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
 };
 use std::env;
 use std::os::unix::process::CommandExt;
@@ -35,10 +35,21 @@ impl NativeSandbox {
         }
 
         // 2. Prepare Landlock Ruleset
-        let abi = ABI::V1;
+        let abi = ABI::V4; // V4 supports AccessNet
         let mut ruleset = Ruleset::default()
-            .handle_access(AccessFs::from_all(abi))
-            .map_err(|e| SboxError::Landlock(e.to_string()))?
+            .handle_access(AccessFs::from_all(ABI::V1))
+            .map_err(|e| SboxError::Landlock(e.to_string()))?;
+        
+        // Add network restrictions if not allowing net out (and network is enabled)
+        if policy.network_enabled && !policy.allow_net_out {
+            // We only handle ConnectTcp. This means ConnectTcp is DENIED globally,
+            // while BindTcp remains ALLOWED (because we don't handle it).
+            ruleset = ruleset
+                .handle_access(AccessNet::ConnectTcp)
+                .map_err(|e| SboxError::Landlock(e.to_string()))?;
+        }
+
+        let mut ruleset_created = ruleset
             .create()
             .map_err(|e| SboxError::Landlock(e.to_string()))?;
 
@@ -57,7 +68,7 @@ impl NativeSandbox {
         // Add home toolchain directories (read-only)
         if let Ok(home) = env::var("HOME") {
             let home_path = PathBuf::from(home);
-            for toolchain_dir in &[".rustup", ".cargo", ".nvm", ".pyenv", ".bun", ".local", ".cache"] {
+            for toolchain_dir in &[".rustup", ".cargo", ".nvm", ".pyenv", ".bun", ".local"] {
                 let path = home_path.join(toolchain_dir);
                 if path.exists() {
                     ro_paths.push(path);
@@ -68,8 +79,8 @@ impl NativeSandbox {
         for path in ro_paths {
             if path.exists() {
                 if let Ok(fd) = PathFd::new(&path) {
-                    ruleset = ruleset
-                        .add_rule(PathBeneath::new(fd, AccessFs::from_read(abi)))
+                    ruleset_created = ruleset_created
+                        .add_rule(PathBeneath::new(fd, AccessFs::from_read(ABI::V1)))
                         .map_err(|e| SboxError::Landlock(e.to_string()))?;
                 }
             }
@@ -81,8 +92,8 @@ impl NativeSandbox {
                 let p = Path::new(dir);
                 if p.exists() {
                     if let Ok(fd) = PathFd::new(p) {
-                        ruleset = ruleset
-                            .add_rule(PathBeneath::new(fd, AccessFs::from_read(abi)))
+                        ruleset_created = ruleset_created
+                            .add_rule(PathBeneath::new(fd, AccessFs::from_read(ABI::V1)))
                             .map_err(|e| SboxError::Landlock(e.to_string()))?;
                     }
                 }
@@ -93,8 +104,8 @@ impl NativeSandbox {
         for rw_path in &policy.writable_paths {
             if rw_path.exists() {
                 if let Ok(fd) = PathFd::new(rw_path) {
-                    ruleset = ruleset
-                        .add_rule(PathBeneath::new(fd, AccessFs::from_all(abi)))
+                    ruleset_created = ruleset_created
+                        .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
                         .map_err(|e| SboxError::Landlock(e.to_string()))?;
                 }
             }
@@ -102,17 +113,58 @@ impl NativeSandbox {
 
         // 3. Network Namespace Policy
         let network_enabled = policy.network_enabled;
-        let mut ruleset_opt = Some(ruleset);
+        let mut ruleset_opt = Some(ruleset_created);
+
+        // Prepare .env files to mask
+        let mut env_files_to_mask = Vec::new();
+        if !policy.allow_env {
+            if let Ok(cwd) = env::current_dir() {
+                if let Ok(entries) = std::fs::read_dir(&cwd) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                                if file_name == ".env" || file_name.starts_with(".env.") {
+                                    if let Ok(target) =
+                                        std::ffi::CString::new(path.to_string_lossy().as_ref())
+                                    {
+                                        env_files_to_mask.push(target);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let dev_null = std::ffi::CString::new("/dev/null").unwrap();
+        let fs_type = std::ffi::CString::new("none").unwrap();
 
         // 4. Configure pre_exec hook for Landlock restriction & Network unshare
         unsafe {
             cmd.pre_exec(move || {
-                // Network isolation if network is OFF
+                // Namespace isolation: always unshare mount and user namespace
+                let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS;
                 if !network_enabled {
-                    let ret = libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET);
-                    if ret != 0 {
-                        // Fallback if unshare fails
-                        let _ = libc::unshare(libc::CLONE_NEWNET);
+                    flags |= libc::CLONE_NEWNET;
+                }
+
+                let ret = libc::unshare(flags);
+                if ret != 0 {
+                    // Fallback if unshare fails
+                    let _ = libc::unshare(libc::CLONE_NEWNET);
+                }
+
+                if ret == 0 && !env_files_to_mask.is_empty() {
+                    for target in &env_files_to_mask {
+                        libc::mount(
+                            dev_null.as_ptr(),
+                            target.as_ptr(),
+                            fs_type.as_ptr(),
+                            libc::MS_BIND,
+                            std::ptr::null(),
+                        );
                     }
                 }
 

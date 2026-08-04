@@ -20,14 +20,14 @@ pub fn install() -> Result<()> {
 
     for target in SHIM_TARGETS {
         let shim_path = shim_dir.join(target);
-        
+
         let script = format!(
             "#!/bin/sh\nexec \"{}\" run -- {} \"$@\"\n",
             sbox_bin, target
         );
 
         fs::write(&shim_path, script)?;
-        
+
         let mut perms = fs::metadata(&shim_path)?.permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&shim_path, perms)?;
@@ -44,13 +44,22 @@ pub fn install() -> Result<()> {
 pub fn verify() -> Result<()> {
     let shim_dir = get_shim_dir()?;
     let path_var = env::var("PATH").unwrap_or_default();
-    
+
     let shim_dir_str = shim_dir.to_string_lossy();
     if path_var.contains(&*shim_dir_str) {
-        println!("✓ sbox shim directory ({}) is active in PATH.", shim_dir.display());
+        println!(
+            "✓ sbox shim directory ({}) is active in PATH.",
+            shim_dir.display()
+        );
     } else {
-        println!("✗ sbox shim directory ({}) is NOT in PATH.", shim_dir.display());
-        println!("Add it by running: export PATH=\"{}:$PATH\"", shim_dir.display());
+        println!(
+            "✗ sbox shim directory ({}) is NOT in PATH.",
+            shim_dir.display()
+        );
+        println!(
+            "Add it by running: export PATH=\"{}:$PATH\"",
+            shim_dir.display()
+        );
     }
 
     Ok(())

@@ -3,3 +3,8 @@ diffs/
 .idea/
 .junie/
 /examples/compose-app/node_modules/
+/examples/fastapi-demo/.venv/
+/examples/fastapi-demo/.env
+test_*
+test.env
+roadmap.md
