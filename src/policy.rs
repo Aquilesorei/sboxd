@@ -19,7 +19,7 @@ impl CommandPolicy {
             which::which(cmd).map_err(|_| SboxError::BinaryNotFound(cmd.to_string()))?;
 
         let program_name = cmd.to_string();
-        // Network is ON by default so dev tools never break; offline flag cuts it off
+       
         let network_enabled = !offline;
 
         let mut writable_paths = vec![
@@ -35,7 +35,6 @@ impl CommandPolicy {
             }
         }
 
-        // Ensure target build directories if present are writable
         let cwd = env::current_dir()?;
         for dir in &["node_modules", "target", ".venv", "vendor", "dist", "build"] {
             let path = cwd.join(dir);

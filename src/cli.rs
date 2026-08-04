@@ -9,15 +9,12 @@ use clap::{Parser, Subcommand};
     allow_external_subcommands = true
 )]
 pub struct Cli {
-    /// Cut off all network access (offline mode)
     #[arg(short = 'n', long = "offline", global = true)]
     pub offline: bool,
 
-    /// Allow access to sensitive environment variables and .env files
     #[arg(short = 'e', long = "allow-env", global = true)]
     pub allow_env: bool,
 
-    /// Allow outbound network connections (egress)
     #[arg(short = 'o', long = "allow-net-out", global = true)]
     pub allow_net_out: bool,
 
@@ -27,25 +24,22 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Explicitly run a command in the native sandbox
+   
     Run {
-        /// Cut off network access for this run
+   
         #[arg(short = 'n', long = "offline")]
         offline: bool,
-        /// Allow access to sensitive environment variables and .env files
         #[arg(short = 'e', long = "allow-env")]
         allow_env: bool,
-        /// Allow outbound network connections (egress)
+   
         #[arg(short = 'o', long = "allow-net-out")]
         allow_net_out: bool,
-        /// The command to execute
         command: String,
-        /// Arguments for the command
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     
-    /// Snapshots the current project dependencies to prevent runtime tampering
+
     Lock,
 
     #[command(hide = true)]
@@ -54,15 +48,14 @@ pub enum Commands {
         action: ShimAction,
     },
     
-    /// Catch external subcommands (e.g. `sbox npm install`)
+    
     #[command(external_subcommand)]
     External(Vec<String>),
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ShimAction {
-    /// Install shims for common dev tools into ~/.local/share/sbox/shims
     Install,
-    /// Verify active shims on PATH
+
     Verify,
 }

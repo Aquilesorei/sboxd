@@ -26,7 +26,7 @@ impl NativeSandbox {
         let mut cmd = Command::new(&policy.binary_path);
         cmd.args(&policy.args);
 
-        // 1. Scrub sensitive environment variables
+
         let current_envs: Vec<(String, String)> = env::vars().collect();
         for (key, _) in current_envs {
             if Self::is_sensitive_env(&key) {
@@ -34,16 +34,15 @@ impl NativeSandbox {
             }
         }
 
-        // 2. Prepare Landlock Ruleset
+
         let abi = ABI::V4; // V4 supports AccessNet
         let mut ruleset = Ruleset::default()
             .handle_access(AccessFs::from_all(ABI::V1))
             .map_err(|e| SboxError::Landlock(e.to_string()))?;
         
-        // Add network restrictions if not allowing net out (and network is enabled)
+
         if policy.network_enabled && !policy.allow_net_out {
-            // We only handle ConnectTcp. This means ConnectTcp is DENIED globally,
-            // while BindTcp remains ALLOWED (because we don't handle it).
+
             ruleset = ruleset
                 .handle_access(AccessNet::ConnectTcp)
                 .map_err(|e| SboxError::Landlock(e.to_string()))?;

@@ -1,80 +1,54 @@
 # sbox
 
-> **Zero-config, instant (< 2ms) native Linux security sandbox for development commands.**
+Zero-config native Linux security sandbox for development commands.
 
-`sbox` protects your host machine from **malicious postinstall scripts and supply chain attacks** during `npm install`, `cargo build`, `uv sync`, `pip install`, and other package manager executions—without Docker, Podman, or configuration files.
+sbox protects the host machine from supply chain attacks and malicious post-install scripts during package manager executions (`npm install`, `cargo build`, `uv sync`) without requiring Docker, Podman, or configuration files.
 
----
+## Features
 
-## ⚡ Why sbox?
+- **Kernel Landlock Filesystem Isolation**: Restricts filesystem access using Landlock LSM (ABI V4). System paths (`/usr`, `/lib`, `/etc`) and toolchain paths are granted read-only access. The project workspace and `/tmp` are granted read-write access. Sensitive paths (`~/.ssh`, `~/.aws`) are strictly blocked. 
+- **Kernel Landlock Network Egress Blocking**: Implements a zero-trust default for outgoing TCP connections (`AccessNet::ConnectTcp`) to prevent data exfiltration. `BindTcp` is permitted to seamlessly support local development servers.
+- **Namespaces & Bind Mounts**: Utilizes `CLONE_NEWNS` to bind-mount `/dev/null` over `.env` files, preventing secrets from being read during sandbox execution.
+- **Workspace Hashing Tripwire**: Includes `sbox lock` to compute a stable SHA-256 content hash of dependency directories (`node_modules`, `.venv`). Lockfiles are securely stored in `~/.local/share/sbox/locks/`, which is enforced as read-only within the sandbox. The `sbox run` command verifies this hash before booting to prevent runtime dependency tampering.
+- **Environment Scrubbing**: Automatically strips AWS keys, GitHub tokens, and secret environment variables prior to process execution.
 
-| Feature | Raw Command (`npm install`) | Heavy Containers (Docker/Podman) | **`sbox` (Linux Native)** |
-|---|---|---|---|
-| **Security** | ❌ Full Host Access | ✅ Isolated Container | ✅ **Kernel Landlock + NetNS** |
-| **Setup Needed** | None | ❌ Install Docker/Podman, pull OCI images | ✅ **Zero Setup (Single Binary)** |
-| **Configuration** | None | ❌ Requires 50-line YAML configs | ✅ **Zero Config Needed** |
-| **Tool Version** | Host version | Container image version | ✅ **Host Machine Version** |
-| **Startup Speed** | < 1ms | ❌ ~300ms – 2,000ms | ⚡ **< 2 milliseconds** |
+## Usage
 
----
-
-## 🛡️ Threat Model: Supply Chain Attacks
-
-When you clone an open-source project and run `npm install` or `cargo build`, lifecycle scripts (`postinstall`, `build.rs`, `setup.py`) execute arbitrary code on your computer. Malicious packages attempt to:
-
-- Read `~/.ssh/id_rsa`, `~/.aws/credentials`, or `.env` files.
-- Exfiltrate tokens (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `NPM_TOKEN`) over remote network sockets.
-- Modify system binaries or shell RC files (`~/.bashrc`).
-
-`sbox` runs these commands inside a **Linux Kernel Sandbox** that blocks secret theft, locks down filesystem access, and unshares network access.
-
----
-
-## 🚀 Quick Start
-
-### 1. Direct Command Execution
-Run any command cleanly through `sbox` in any directory:
+### Direct Command Execution
+Run any command cleanly through sbox in any directory:
 
 ```bash
-# Sandboxed package installation (Network: ON, Filesystem: Restricted, Env: Scrubbed)
-sbox npm install
-sbox uv sync
-sbox cargo add serde
+# General sandboxed execution (Network egress denied by default)
+sbox run npm start
 
-# Sandboxed builds & tests (Network: OFF, Filesystem: Restricted, Env: Scrubbed)
-sbox cargo build --release
-sbox npm test
-sbox python main.py
+# Allow network egress
+sbox run --allow-net-out npm install
+
+# Allow environment variables to bypass scrubbing
+sbox run --allow-env my_script.sh
 ```
 
-### 2. Transparent Shell Shims
-Intercept your dev tools transparently so you never forget to sandbox:
+### Workspace Hashing Tripwire
+Snapshot the current project dependencies to prevent runtime tampering:
 
 ```bash
-# Install shims into ~/.local/share/sbox/shims
+# Run after a trusted install to compute the content hash and lock it
+sbox lock
+
+# Run command (verifies against the lockfile before boot)
+sbox run npm start
+```
+
+### Transparent Shell Shims
+Intercept dev tools transparently:
+
+```bash
 sbox shim install
-
-# Add shims to your ~/.bashrc or ~/.zshrc:
 export PATH="$HOME/.local/share/sbox/shims:$PATH"
-
-# Verify active shims
 sbox shim verify
 ```
 
----
-
-## 🔬 How It Works (Kernel Primitives)
-
-`sbox` uses unprivileged Linux kernel security features:
-
-1. **Landlock LSM**: Restricts filesystem access. Grants Read-Only rights to system paths (`/usr`, `/lib`, `/etc`) and toolchain paths (`~/.cargo`, `~/.rustup`, `~/.nvm`, etc.), Read/Write to the project workspace and `/tmp`, while hard-blocking access to sensitive files (`~/.ssh`, `~/.aws`, `.env`).
-2. **Network Namespaces (`CLONE_NEWNET`)**: Unshares outbound network access for builds and scripts so malicious postinstall payloads cannot exfiltrate data over HTTP/DNS.
-3. **Environment Scrubbing**: Automatically strips AWS keys, GitHub tokens, and secret environment variables prior to process execution.
-
-For detailed architecture docs, see [`docs/how-it-works.md`](file:///home/aquiles/RustroverProjects/sbox/docs/how-it-works.md) and [`docs/security.md`](file:///home/aquiles/RustroverProjects/sbox/docs/security.md).
-
----
-
-## 📜 License
-
-MIT License. Created by Aquiles.
+## Architecture Notes
+- Execution relies entirely on Linux kernel primitives. 
+- No container runtime (Docker/Podman) is required.
+- Execution startup time is under 2 milliseconds.
