@@ -51,8 +51,3 @@ sbox shim install
 export PATH="$HOME/.local/share/sbox/shims:$PATH"
 sbox shim verify
 ```
-
-## Architecture Notes
-- Execution relies entirely on Linux kernel primitives. 
-- No container runtime (Docker/Podman) is required.
-- Execution startup time is under 2 milliseconds.
