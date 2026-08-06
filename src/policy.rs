@@ -9,12 +9,21 @@ pub struct CommandPolicy {
     pub args: Vec<String>,
     pub network_enabled: bool,
     pub allow_env: bool,
-    pub allow_net_out: bool,
+    /// `None`: no outbound TCP at all. `Some(vec![])`: legacy blanket allow
+    /// (deprecated, no host enforcement). `Some(hosts)`: outbound TCP routed
+    /// through the local egress proxy, restricted to these hosts.
+    pub allow_net_out: Option<Vec<String>>,
     pub writable_paths: Vec<PathBuf>,
 }
 
 impl CommandPolicy {
-    pub fn resolve(cmd: &str, args: &[String], offline: bool, allow_env: bool, allow_net_out: bool) -> Result<Self> {
+    pub fn resolve(
+        cmd: &str,
+        args: &[String],
+        offline: bool,
+        allow_env: bool,
+        allow_net_out: Option<Vec<String>>,
+    ) -> Result<Self> {
         let binary_path =
             which::which(cmd).map_err(|_| SboxError::BinaryNotFound(cmd.to_string()))?;
 
@@ -61,13 +70,13 @@ mod tests {
 
     #[test]
     fn test_policy_resolve_network_by_default() {
-        let policy = CommandPolicy::resolve("echo", &["test".to_string()], false, false, false).unwrap();
+        let policy = CommandPolicy::resolve("echo", &["test".to_string()], false, false, None).unwrap();
         assert!(policy.network_enabled);
     }
 
     #[test]
     fn test_policy_resolve_offline_flag() {
-        let policy = CommandPolicy::resolve("echo", &["test".to_string()], true, false, false).unwrap();
+        let policy = CommandPolicy::resolve("echo", &["test".to_string()], true, false, None).unwrap();
         assert!(!policy.network_enabled);
     }
 }

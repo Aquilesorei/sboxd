@@ -118,8 +118,6 @@ pub fn lock_project() -> Result<()> {
         }
         None => {
             println!("[sbox] No dependency directories (node_modules, .venv, vendor) found.");
-            // If they want to lock an empty state, we could just write a dummy hash,
-            // but deleting the lock file is simpler.
             if lock_file.exists() {
                 fs::remove_file(&lock_file)?;
             }

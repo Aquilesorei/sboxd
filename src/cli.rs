@@ -15,8 +15,19 @@ pub struct Cli {
     #[arg(short = 'e', long = "allow-env", global = true)]
     pub allow_env: bool,
 
-    #[arg(short = 'o', long = "allow-net-out", global = true)]
-    pub allow_net_out: bool,
+    /// Allow outbound TCP, routed through a local egress proxy restricted to
+    /// these hosts: --allow-net-out=api.stripe.com,github.com
+    /// Bare flag with no hosts allows all outbound traffic (deprecated, unenforced).
+    #[arg(
+        short = 'o',
+        long = "allow-net-out",
+        global = true,
+        num_args = 0..,
+        require_equals = true,
+        value_delimiter = ',',
+        value_name = "HOST"
+    )]
+    pub allow_net_out: Option<Vec<String>>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -32,8 +43,15 @@ pub enum Commands {
         #[arg(short = 'e', long = "allow-env")]
         allow_env: bool,
    
-        #[arg(short = 'o', long = "allow-net-out")]
-        allow_net_out: bool,
+        #[arg(
+            short = 'o',
+            long = "allow-net-out",
+            num_args = 0..,
+            require_equals = true,
+            value_delimiter = ',',
+            value_name = "HOST"
+        )]
+        allow_net_out: Option<Vec<String>>,
         command: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

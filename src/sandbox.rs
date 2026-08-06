@@ -1,5 +1,6 @@
 use crate::error::{Result, SboxError};
 use crate::policy::CommandPolicy;
+use crate::proxy::EgressProxy;
 use landlock::{
     ABI, Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
 };
@@ -35,14 +36,33 @@ impl NativeSandbox {
         }
 
 
+        // Egress proxy initialization.
+        // Landlock evaluates ports, not hostnames. To enforce domain allowlists,
+        // a local proxy is spawned and Landlock permits egress only to that local port.
+        let mut proxy_port: Option<u16> = None;
+        match &policy.allow_net_out {
+            Some(hosts) if !hosts.is_empty() => {
+                proxy_port = Some(EgressProxy::spawn(hosts.clone())?);
+            }
+            Some(_) => {
+                eprintln!(
+                    "[sbox] warning: --allow-net-out with no hosts allows ALL outbound traffic, unenforced. \
+                     Prefer --allow-net-out=host1,host2"
+                );
+            }
+            None => {}
+        }
+
+        // Restrict outbound TCP unless unrestricted fallback is enabled.
+        let restrict_net = policy.network_enabled
+            && !matches!(&policy.allow_net_out, Some(hosts) if hosts.is_empty());
+
         let abi = ABI::V4; // V4 supports AccessNet
         let mut ruleset = Ruleset::default()
             .handle_access(AccessFs::from_all(ABI::V1))
             .map_err(|e| SboxError::Landlock(e.to_string()))?;
-        
 
-        if policy.network_enabled && !policy.allow_net_out {
-
+        if restrict_net {
             ruleset = ruleset
                 .handle_access(AccessNet::ConnectTcp)
                 .map_err(|e| SboxError::Landlock(e.to_string()))?;
@@ -51,6 +71,18 @@ impl NativeSandbox {
         let mut ruleset_created = ruleset
             .create()
             .map_err(|e| SboxError::Landlock(e.to_string()))?;
+
+        if let Some(port) = proxy_port {
+            ruleset_created = ruleset_created
+                .add_rule(NetPort::new(port, AccessNet::ConnectTcp))
+                .map_err(|e| SboxError::Landlock(e.to_string()))?;
+
+            // Route standard client traffic through the internal proxy.
+            let proxy_url = format!("http://127.0.0.1:{port}");
+            for var in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+                cmd.env(var, &proxy_url);
+            }
+        }
 
         // Add Read-Only system directories
         let mut ro_paths = vec![

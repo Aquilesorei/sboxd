@@ -41,7 +41,7 @@ fn run() -> Result<ExitCode> {
                 &args,
                 offline || global_offline,
                 allow_env || global_allow_env,
-                allow_net_out || global_allow_net_out,
+                allow_net_out.or(global_allow_net_out),
             )
         },
         Some(Commands::Shim { action }) => match action {
@@ -62,7 +62,7 @@ fn run() -> Result<ExitCode> {
             let cmd = &args[0];
 
             sbox::lock::verify_project()?;
-            
+
             let cmd_args = &args[1..];
             execute_cmd(cmd, cmd_args, global_offline, global_allow_env, global_allow_net_out)
         }
@@ -76,18 +76,22 @@ fn run() -> Result<ExitCode> {
     }
 }
 
-fn execute_cmd(cmd: &str, args: &[String], offline: bool, allow_env: bool, allow_net_out: bool) -> Result<ExitCode> {
+fn execute_cmd(
+    cmd: &str,
+    args: &[String],
+    offline: bool,
+    allow_env: bool,
+    allow_net_out: Option<Vec<String>>,
+) -> Result<ExitCode> {
     let policy = CommandPolicy::resolve(cmd, args, offline, allow_env, allow_net_out)?;
 
-    println!(
-        "[sbox] Running '{}' (network: {})",
-        policy.program_name,
-        if policy.network_enabled {
-            "ON"
-        } else {
-            "OFF (unshared)"
-        }
-    );
+    let net_status = match (&policy.network_enabled, &policy.allow_net_out) {
+        (false, _) => "OFF (unshared)".to_string(),
+        (true, None) => "no outbound".to_string(),
+        (true, Some(hosts)) if hosts.is_empty() => "ON, unrestricted (deprecated)".to_string(),
+        (true, Some(hosts)) => format!("ON, restricted to [{}]", hosts.join(", ")),
+    };
+    println!("[sbox] Running '{}' (network: {})", policy.program_name, net_status);
 
     let status = NativeSandbox::execute(&policy)?;
     let code = status.code().unwrap_or(1);
