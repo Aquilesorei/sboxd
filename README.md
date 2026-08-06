@@ -56,6 +56,3 @@ sbox shim verify
 - Execution relies entirely on Linux kernel primitives. 
 - No container runtime (Docker/Podman) is required.
 - Execution startup time is under 2 milliseconds.
-
-## Known Limitations
-- **Egress proxy is host-scoped, not secret-scoped.** When a command runs with both `--allow-env` and `--allow-net-out=<allowed-host>`, any code in that process (including a malicious nested dependency) can still send `.env` secrets to that *same allowed host* — sbox stops exfil to arbitrary/unlisted hosts, not misuse of a host you already trust. Closing that gap needs the proxy to inject secrets into outgoing requests itself (so the child process never sees the raw value), which is a real architecture change, not a flag. Not built until a concrete credential case needs it — see `CLAUDE.md`.
